@@ -5,8 +5,8 @@
 import { $ } from "bun";
 
 const actions = [
-  { entry: "src/gmail-fetch.ts", out: ".github/actions/gmail-fetch/dist/gmail-fetch.mjs" },
-  { entry: "src/gmail-clean.ts", out: ".github/actions/gmail-clean/dist/gmail-clean.mjs" },
+  { entry: "src/gmail-fetch.ts", out: "actions/gmail-fetch/dist/gmail-fetch.mjs" },
+  { entry: "src/gmail-clean.ts", out: "actions/gmail-clean/dist/gmail-clean.mjs" },
 ];
 
 for (const { entry, out } of actions) {

@@ -73,4 +73,21 @@ bun run typecheck     # No type errors
 bun run build         # Bundles compile
 ```
 
-All three MUST pass. Fix any failures before proceeding to /review or /ship.
+All three MUST pass. Fix any failures before proceeding.
+
+## Simplify
+
+After verification passes, run `/simplify` on all changed files. This reviews code for:
+- Unnecessary complexity or over-engineering
+- Opportunities for reuse across files
+- Clarity and consistency improvements
+- Dead code or redundant logic
+
+Fix any issues found, then re-run verification to confirm nothing broke.
+
+## After writing code
+
+1. Verification passes
+2. `/simplify` passes
+3. Create a single commit per logical change
+4. Proceed to /review or /ship

@@ -20,15 +20,10 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: "22"
-      shell: bash
 
     - name: Run cleanup
       shell: bash
       env:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
       run: |
-        DRY_RUN_FLAG=""
-        if [ "${{ inputs.dry-run }}" = "true" ]; then
-          DRY_RUN_FLAG="--dry-run"
-        fi
-        node ${{ github.action_path }}/dist/gmail-clean.mjs "${{ inputs.triage-json }}" $DRY_RUN_FLAG
+        node ${{ github.action_path }}/dist/gmail-clean.mjs "${{ inputs.triage-json }}" ${{ inputs.dry-run == 'true' && '--dry-run' || '' }}

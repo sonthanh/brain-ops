@@ -43,12 +43,15 @@ export async function fetchUnreadEmails(options: {
 
       for (const d of details) {
         const headers = d.data.payload?.headers || [];
+        const header = (name: string): string =>
+          headers.find((h) => h.name === name)?.value || "";
+
         emails.push({
           id: d.data.id!,
-          from: headers.find((h) => h.name === "From")?.value || "",
-          subject: headers.find((h) => h.name === "Subject")?.value || "",
+          from: header("From"),
+          subject: header("Subject"),
           snippet: d.data.snippet || "",
-          date: headers.find((h) => h.name === "Date")?.value || "",
+          date: header("Date"),
           labels: d.data.labelIds || [],
         });
       }

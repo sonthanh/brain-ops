@@ -15,11 +15,9 @@ export interface TriageAction {
   reply_hint?: string;
 }
 
-export interface ExecutionResult {
-  ok: boolean;
-  skip: boolean;
-  reason?: string;
-}
+export type ExecutionResult =
+  | { ok: true }
+  | { ok: false; reason: string };
 
 export interface CleanupStats {
   actions: Record<string, number>;

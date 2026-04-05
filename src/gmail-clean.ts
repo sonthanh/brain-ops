@@ -7,6 +7,13 @@ import type { TriageAction, ExecutionResult, CleanupStats } from "./lib/types.ts
 const CONCURRENCY = 10;
 const RETENTION_DAYS = 7;
 
+/** Label IDs for actions that just modify labels on a message. */
+const LABEL_ACTIONS: Record<string, { add?: string[]; remove?: string[] }> = {
+  archive: { remove: ["INBOX"] },
+  star: { add: ["STARRED"] },
+  "mark-important": { add: ["IMPORTANT"] },
+};
+
 function extractSender(value: string): string | undefined {
   return (value.match(/<([^>]+)>/) || value.match(/(\S+@\S+)/))?.[1];
 }
@@ -17,18 +24,23 @@ export async function executeAction(
   labelCache: Map<string, string>,
 ): Promise<ExecutionResult> {
   try {
-    if (action.action === "archive") {
+    // Simple label-based actions (archive, star, mark-important)
+    const labelAction = LABEL_ACTIONS[action.action];
+    if (labelAction) {
       await gmail.users.messages.modify({
         userId: "me",
         id: action.id,
-        requestBody: { removeLabelIds: ["INBOX"] },
+        requestBody: {
+          addLabelIds: labelAction.add,
+          removeLabelIds: labelAction.remove,
+        },
       });
-      return { ok: true, skip: false };
+      return { ok: true };
     }
 
     if (action.action === "delete") {
       await gmail.users.messages.trash({ userId: "me", id: action.id });
-      return { ok: true, skip: false };
+      return { ok: true };
     }
 
     if (action.action.startsWith("label:")) {
@@ -47,25 +59,7 @@ export async function executeAction(
         id: action.id,
         requestBody: { addLabelIds: [labelId] },
       });
-      return { ok: true, skip: false };
-    }
-
-    if (action.action === "star") {
-      await gmail.users.messages.modify({
-        userId: "me",
-        id: action.id,
-        requestBody: { addLabelIds: ["STARRED"] },
-      });
-      return { ok: true, skip: false };
-    }
-
-    if (action.action === "mark-important") {
-      await gmail.users.messages.modify({
-        userId: "me",
-        id: action.id,
-        requestBody: { addLabelIds: ["IMPORTANT"] },
-      });
-      return { ok: true, skip: false };
+      return { ok: true };
     }
 
     if (action.action === "unsubscribe") {
@@ -91,33 +85,20 @@ export async function executeAction(
           // Filter may already exist
         }
       }
-      return { ok: true, skip: false };
+      return { ok: true };
     }
 
     if (action.action === "needs-reply") {
-      return { ok: false, skip: true, reason: "manual" };
+      return { ok: false, reason: "manual" };
     }
 
-    return { ok: false, skip: true, reason: `unknown: ${action.action}` };
+    return { ok: false, reason: `unknown: ${action.action}` };
   } catch (e: unknown) {
     if (e && typeof e === "object" && "code" in e && e.code === 404) {
-      return { ok: false, skip: true, reason: "not found" };
+      return { ok: false, reason: "not found" };
     }
     throw e;
   }
-}
-
-async function runBatch<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    results.push(...(await Promise.all(batch.map(fn))));
-  }
-  return results;
 }
 
 function updateMd(jsonPath: string, stats: Record<string, number>, skipped: number) {
@@ -194,13 +175,20 @@ export async function cleanupEmails(options: {
   const stats: Record<string, number> = {};
   let skipped = 0;
 
-  const results = await runBatch(pending, CONCURRENCY, (a) =>
-    executeAction(gmail, a, labelCache),
-  );
-  for (let i = 0; i < pending.length; i++) {
-    const r = results[i];
-    if (r!.ok) stats[pending[i]!.action] = (stats[pending[i]!.action] || 0) + 1;
-    else if (r!.skip) skipped++;
+  for (let i = 0; i < pending.length; i += CONCURRENCY) {
+    const batch = pending.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map((a) => executeAction(gmail, a, labelCache)),
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const r = results[j]!;
+      const action = batch[j]!.action;
+      if (r.ok) {
+        stats[action] = (stats[action] || 0) + 1;
+      } else {
+        skipped++;
+      }
+    }
   }
 
   updateMd(fullPath, stats, skipped);

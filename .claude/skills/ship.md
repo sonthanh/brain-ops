@@ -11,13 +11,16 @@ Ship a completed feature or fix. Handles testing through PR creation.
 ## Reference skills (auto-loaded globally)
 - **github-actions-docs** — For any workflow file changes included in the PR
 
-## Pre-flight (all must pass)
+## Pre-flight (all must pass, in order)
 
+1. **Test + typecheck + build:**
 ```bash
 bun test              # Tests pass?
 bun run typecheck     # Types clean?
 bun run build         # Bundles compile?
 ```
+
+2. **Simplify:** Run `/simplify` on all changed files. Fix any issues found, then re-run step 1.
 
 Stop on any failure. Fix, then restart from the top.
 
