@@ -1,0 +1,29 @@
+name: Send Telegram Message
+description: Send a message via Telegram Bot API
+
+inputs:
+  bot-token:
+    description: Telegram bot token
+    required: true
+  chat-id:
+    description: Telegram chat ID
+    required: true
+  message:
+    description: Message text to send
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl -sf -X POST "https://api.telegram.org/bot${{ inputs.bot-token }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$(python3 -c "
+        import json
+        print(json.dumps({
+            'chat_id': int('${{ inputs.chat-id }}'),
+            'text': '''${{ inputs.message }}''',
+            'parse_mode': 'Markdown'
+        }))
+        ")" || echo "Telegram send failed"
