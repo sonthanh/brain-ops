@@ -1,0 +1,20 @@
+{
+  "name": "brain-ops",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Operations layer for Brain OS — automation scripts and composite GitHub Actions",
+  "scripts": {
+    "typecheck": "bun x tsc --noEmit",
+    "test": "bun test",
+    "test:dry-run": "bun test --grep dry-run",
+    "build": "bun run scripts/build.ts",
+    "lint:actions": "actionlint"
+  },
+  "dependencies": {
+    "@googleapis/gmail": "^16.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.16",
+    "typescript": "^5.8.3"
+  }
+}

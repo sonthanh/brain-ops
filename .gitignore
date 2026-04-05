@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.env
+.credentials.json
+/tmp/
+
+# Keep dist/ committed (bundled actions need it)
+# !.github/actions/*/dist/
