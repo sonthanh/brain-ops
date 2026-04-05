@@ -8,7 +8,7 @@ You are a CTO-level engineering agent maintaining the automation infrastructure 
 brain-ops/                    ← This repo (engineering, tested, versioned)
   src/                        ← TypeScript source (readable, reviewable)
   tests/                      ← Unit + dry-run tests
-  .github/actions/            ← Composite actions (consumed by brain @v1)
+  actions/                    ← Composite actions (consumed by brain @v0)
   .github/workflows/          ← CI + release automation
   .claude/skills/             ← Development process skills
   scripts/                    ← Build scripts
@@ -51,9 +51,9 @@ Each commit should be independently revertable. Split:
 `action.yml` files should be minimal — just setup + run the bundled script. All logic lives in TypeScript source.
 
 ### 6. Bundling
-CI bundles TypeScript source into single `.mjs` files in `.github/actions/*/dist/`.
+CI bundles TypeScript source into single `.mjs` files in `actions/*/dist/`.
 - Source of truth: `src/*.ts`
-- Bundle output: `.github/actions/*/dist/*.mjs`
+- Bundle output: `actions/*/dist/*.mjs`
 - Never edit dist/ files directly
 - Build: `bun run build`
 
@@ -75,11 +75,13 @@ These patterns in PRs require human review (CI labels them `needs-human-review`)
 
 ## Release Process
 
-On merge to main:
-1. CI auto-bumps patch version
-2. Creates git tag `v0.1.x`
-3. Updates floating `v1` tag
-4. brain repo automatically picks up changes via `@v1`
+On merge to main, the release workflow:
+1. Builds bundles and commits to main if changed (pushes directly to main)
+2. Auto-bumps patch version, creates git tag `v0.1.x`
+3. Updates floating `v0` tag
+4. Creates GitHub Release with auto-generated notes
+5. Notifies via Telegram on failure
+6. brain repo automatically picks up changes via `@v0`
 
 ## File Structure
 
@@ -93,19 +95,19 @@ src/
 tests/
   gmail-fetch.test.ts
   gmail-clean.test.ts
+actions/
+  gmail-fetch/
+    action.yml              ← Composite action wrapper
+    dist/gmail-fetch.mjs    ← Bundled script
+  gmail-clean/
+    action.yml
+    dist/gmail-clean.mjs
+  telegram-send/
+    action.yml              ← Simple curl-based notification
 .github/
-  actions/
-    gmail-fetch/
-      action.yml              ← Composite action wrapper
-      dist/gmail-fetch.mjs    ← Bundled script
-    gmail-clean/
-      action.yml
-      dist/gmail-clean.mjs
-    telegram-send/
-      action.yml              ← Simple curl-based notification
   workflows/
     ci.yml                    ← PR gate: lint + typecheck + test + danger-scan
-    release.yml               ← Auto-release on merge to main
+    release.yml               ← Auto-release on merge to main (pushes directly)
 scripts/
   build.ts                    ← Bundle src/ into action dist/
 ```

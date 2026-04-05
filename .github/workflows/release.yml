@@ -26,6 +26,13 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -76,3 +83,11 @@ jobs:
           gh release create ${{ steps.version.outputs.tag }} \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
+
+      - name: Notify on failure
+        if: failure()
+        uses: ./actions/telegram-send
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: "⚠️ brain-ops release failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

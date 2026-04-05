@@ -2,6 +2,7 @@ import { gmail_v1 } from "@googleapis/gmail";
 import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "fs";
 import { resolve, join, dirname } from "path";
+import { parseTriageActions } from "./lib/types.ts";
 import type { TriageAction, ExecutionResult, CleanupStats } from "./lib/types.ts";
 
 const CONCURRENCY = 10;
@@ -82,8 +83,8 @@ export async function executeAction(
               action: { removeLabelIds: ["INBOX"], addLabelIds: ["TRASH"] },
             },
           });
-        } catch {
-          // Filter may already exist
+        } catch (e) {
+          console.warn(`Failed to create filter for ${sender}: ${e}`);
         }
       }
       return { ok: true };
@@ -119,8 +120,12 @@ function cleanOldFiles(triageDir: string) {
     const match = file.match(/^(\d{4}-\d{2}-\d{2})T/);
     if (!match) continue;
     if (match[1] && new Date(match[1]).getTime() < cutoff) {
-      unlinkSync(join(triageDir, file));
-      cleaned++;
+      try {
+        unlinkSync(join(triageDir, file));
+        cleaned++;
+      } catch (e) {
+        console.warn(`Failed to clean ${file}: ${e}`);
+      }
     }
   }
   if (cleaned > 0) console.log(`Cleaned ${cleaned} files older than ${RETENTION_DAYS} days.`);
@@ -136,7 +141,7 @@ export async function cleanupEmails(options: {
     throw new Error(`Not found: ${fullPath}`);
   }
 
-  const actions: TriageAction[] = JSON.parse(readFileSync(fullPath, "utf-8"));
+  const actions: TriageAction[] = parseTriageActions(JSON.parse(readFileSync(fullPath, "utf-8")));
   const pending = actions.filter((a) => a.action !== "needs-reply");
 
   if (!pending.length) {

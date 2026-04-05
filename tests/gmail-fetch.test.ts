@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import { fetchUnreadEmails } from "../src/gmail-fetch.ts";
 
 describe("gmail-fetch", () => {
@@ -9,15 +9,15 @@ describe("gmail-fetch", () => {
     });
 
     test("logs dry-run messages", async () => {
-      const logs: string[] = [];
-      const origLog = console.log;
-      console.log = (...args: unknown[]) => logs.push(args.join(" "));
-
-      await fetchUnreadEmails({ dryRun: true });
-
-      console.log = origLog;
-      expect(logs.some((l) => l.includes("[dry-run]"))).toBe(true);
-      expect(logs.some((l) => l.includes("is:unread in:inbox"))).toBe(true);
+      const spy = spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await fetchUnreadEmails({ dryRun: true });
+        const logs = spy.mock.calls.map((args) => args.join(" "));
+        expect(logs.some((l) => l.includes("[dry-run]"))).toBe(true);
+        expect(logs.some((l) => l.includes("is:unread in:inbox"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
