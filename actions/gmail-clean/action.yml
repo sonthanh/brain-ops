@@ -25,5 +25,10 @@ runs:
       shell: bash
       env:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
+        ACTION_PATH: ${{ github.action_path }}
+        TRIAGE_JSON: ${{ inputs.triage-json }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        node ${{ github.action_path }}/dist/gmail-clean.mjs "${{ inputs.triage-json }}" ${{ inputs.dry-run == 'true' && '--dry-run' || '' }}
+        FLAGS=""
+        if [ "$DRY_RUN" = "true" ]; then FLAGS="--dry-run"; fi
+        node "${ACTION_PATH}/dist/gmail-clean.mjs" "${TRIAGE_JSON}" $FLAGS

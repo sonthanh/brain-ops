@@ -51,7 +51,8 @@ export async function executeAction(
           userId: "me",
           requestBody: { name },
         });
-        labelId = created.data.id!;
+        labelId = created.data.id ?? undefined;
+        if (!labelId) return { ok: false, reason: "label creation returned no ID" };
         labelCache.set(name, labelId);
       }
       await gmail.users.messages.modify({

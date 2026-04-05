@@ -30,11 +30,12 @@ export async function fetchUnreadEmails(options: {
 
     for (let i = 0; i < res.data.messages.length; i += BATCH_SIZE) {
       const chunk = res.data.messages.slice(i, i + BATCH_SIZE);
+      const validChunk = chunk.filter((m) => m.id);
       const details = await Promise.all(
-        chunk.map((m) =>
+        validChunk.map((m) =>
           gmail.users.messages.get({
             userId: "me",
-            id: m.id!,
+            id: m.id as string,
             format: "metadata",
             metadataHeaders: ["From", "Subject", "Date"],
           }),
@@ -42,12 +43,15 @@ export async function fetchUnreadEmails(options: {
       );
 
       for (const d of details) {
+        const id = d.data.id;
+        if (!id) continue;
+
         const headers = d.data.payload?.headers || [];
         const header = (name: string): string =>
           headers.find((h) => h.name === name)?.value || "";
 
         emails.push({
-          id: d.data.id!,
+          id,
           from: header("From"),
           subject: header("Subject"),
           snippet: d.data.snippet || "",

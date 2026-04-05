@@ -31,8 +31,12 @@ runs:
       shell: bash
       env:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
+        ACTION_PATH: ${{ github.action_path }}
+        DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        node ${{ github.action_path }}/dist/gmail-fetch.mjs ${{ inputs.dry-run == 'true' && '--dry-run' || '' }} > /tmp/emails.json
+        FLAGS=""
+        if [ "$DRY_RUN" = "true" ]; then FLAGS="--dry-run"; fi
+        node "${ACTION_PATH}/dist/gmail-fetch.mjs" $FLAGS > /tmp/emails.json
         COUNT=$(python3 -c 'import json; print(len(json.load(open("/tmp/emails.json"))))')
         echo "emails-json=/tmp/emails.json" >> $GITHUB_OUTPUT
         echo "count=$COUNT" >> $GITHUB_OUTPUT

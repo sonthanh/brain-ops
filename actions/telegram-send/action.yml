@@ -16,14 +16,18 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        TG_BOT_TOKEN: ${{ inputs.bot-token }}
+        TG_CHAT_ID: ${{ inputs.chat-id }}
+        TG_MESSAGE: ${{ inputs.message }}
       run: |
-        curl -sf -X POST "https://api.telegram.org/bot${{ inputs.bot-token }}/sendMessage" \
+        curl -sf -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
           -H "Content-Type: application/json" \
           -d "$(python3 -c "
-        import json
+        import json, os
         print(json.dumps({
-            'chat_id': int('${{ inputs.chat-id }}'),
-            'text': '''${{ inputs.message }}''',
+            'chat_id': int(os.environ['TG_CHAT_ID']),
+            'text': os.environ['TG_MESSAGE'],
             'parse_mode': 'Markdown'
         }))
         ")" || echo "Telegram send failed"
