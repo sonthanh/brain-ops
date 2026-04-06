@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -62,7 +64,7 @@ jobs:
             echo "::warning::PR adds new Gmail API scopes"
             DANGEROUS=true
           fi
-          echo "dangerous=$DANGEROUS" >> $GITHUB_OUTPUT
+          echo "dangerous=$DANGEROUS" >> "$GITHUB_OUTPUT"
 
       - name: Label dangerous PRs
         if: steps.danger.outputs.dangerous == 'true'
@@ -108,3 +110,26 @@ jobs:
               pull_number: context.issue.number,
               merge_method: 'squash'
             });
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify on failure
+        if: failure()
+        uses: sonthanh/brain-ops/actions/telegram-send@v0
+        with:
+          bot-token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: "Secret scan failed. Check https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

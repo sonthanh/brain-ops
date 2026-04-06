@@ -1,0 +1,40 @@
+# gitleaks configuration for brain-ops
+# Extends the default ruleset and adds custom rules for secrets
+# commonly found in this repo's domain (Telegram bots, generic tokens).
+
+[extend]
+useDefault = true
+
+# --- Custom rules ---
+
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram Bot Token"
+regex = '''[0-9]{8,10}:[A-Za-z0-9_-]{35}'''
+tags = ["telegram", "bot", "token"]
+
+[[rules]]
+id = "telegram-chat-id-assignment"
+description = "Hardcoded Telegram chat ID assignment"
+regex = '''(?i)chat[_-]?id\s*[:=]\s*-?[0-9]{6,}'''
+tags = ["telegram", "chat-id"]
+
+[[rules]]
+id = "bot-token-generic"
+description = "Generic bot token assignment"
+regex = '''(?i)bot[_-]?token\s*[:=]\s*["'][A-Za-z0-9_:/-]{20,}["']'''
+tags = ["bot", "token"]
+
+# --- Global allowlist ---
+
+[allowlist]
+paths = [
+  '''.gitleaks\.toml''',
+  '''.gitleaksignore''',
+  '''node_modules/''',
+]
+regexes = [
+  '''noreply@anthropic\.com''',
+  '''noreply@github\.com''',
+  '''github-actions\[bot\]''',
+]

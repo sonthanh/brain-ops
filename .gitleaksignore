@@ -1,0 +1,3 @@
+# gitleaksignore — fingerprints of known false positives
+# Add one fingerprint per line. Run `gitleaks detect --redact --verbose`
+# to discover fingerprints, then paste them here if they are safe to ignore.
