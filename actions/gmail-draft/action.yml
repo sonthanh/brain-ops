@@ -1,0 +1,40 @@
+name: Gmail Draft
+description: Create Gmail draft replies from a JSON specification file
+
+inputs:
+  credentials-path:
+    description: Path to Gmail OAuth credentials JSON file
+    required: true
+  drafts-json:
+    description: Path to JSON file with draft specifications
+    required: true
+  dry-run:
+    description: Run without making API calls
+    required: false
+    default: "false"
+
+outputs:
+  created:
+    description: Number of drafts created
+    value: ${{ steps.draft.outputs.created }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Create drafts
+      id: draft
+      shell: bash
+      env:
+        GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
+        ACTION_PATH: ${{ github.action_path }}
+        DRAFTS_JSON: ${{ inputs.drafts-json }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+          FLAGS=""
+          if [ "$DRY_RUN" = "true" ]; then FLAGS="--dry-run"; fi
+          node "${ACTION_PATH}/dist/gmail-draft.mjs" "${DRAFTS_JSON}" $FLAGS

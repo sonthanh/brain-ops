@@ -56,6 +56,37 @@ export function parseTriageActions(raw: unknown): TriageAction[] {
   });
 }
 
+export interface DraftRequest {
+  messageId: string;      // original message ID to reply to
+  to: string;             // reply recipient
+  subject: string;        // reply subject (usually "Re: ...")
+  body: string;           // plain text reply body
+  threadId?: string;      // Gmail thread ID for proper threading
+}
+
+export function parseDraftRequests(raw: unknown): DraftRequest[] {
+  if (!Array.isArray(raw)) {
+    throw new Error("Expected array of draft requests");
+  }
+  return raw.map((item, i) => {
+    if (!item || typeof item !== "object") {
+      throw new Error(`Draft [${i}]: expected object`);
+    }
+    const { messageId, to, subject, body, threadId } = item as Record<string, unknown>;
+    if (typeof messageId !== "string" || !messageId) throw new Error(`Draft [${i}]: missing messageId`);
+    if (typeof to !== "string" || !to) throw new Error(`Draft [${i}]: missing to`);
+    if (typeof subject !== "string") throw new Error(`Draft [${i}]: missing subject`);
+    if (typeof body !== "string" || !body) throw new Error(`Draft [${i}]: missing body`);
+    return {
+      messageId,
+      to,
+      subject,
+      body,
+      ...(typeof threadId === "string" ? { threadId } : {}),
+    };
+  });
+}
+
 export type ExecutionResult =
   | { ok: true }
   | { ok: false; reason: string };
