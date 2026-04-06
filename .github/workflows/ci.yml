@@ -67,7 +67,7 @@ jobs:
           echo "dangerous=$DANGEROUS" >> "$GITHUB_OUTPUT"
 
       - name: Label dangerous PRs
-        if: steps.danger.outputs.dangerous == 'true'
+        if: steps.danger.outputs.dangerous == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -81,7 +81,7 @@ jobs:
   auto-merge:
     needs: gate
     runs-on: ubuntu-latest
-    if: needs.gate.outputs.dangerous != 'true'
+    if: github.event_name == 'pull_request' && needs.gate.outputs.dangerous != 'true'
     permissions:
       contents: write
       pull-requests: write
