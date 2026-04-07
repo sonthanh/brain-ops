@@ -108,7 +108,10 @@ function updateMd(jsonPath: string, stats: Record<string, number>, skipped: numb
   if (!existsSync(mdPath)) return;
   let content = readFileSync(mdPath, "utf-8");
   const parts = Object.entries(stats).map(([k, v]) => `${v} ${k}`);
-  content += `\n\n## Cleanup Results\n${parts.join(", ")}. ${skipped} skipped.`;
+  const section = `\n\n## Cleanup Results\n${parts.join(", ")}. ${skipped} skipped.`;
+  // Prevent duplicate cleanup results on re-runs
+  if (content.includes("## Cleanup Results")) return;
+  content += section;
   writeFileSync(mdPath, content);
 }
 
