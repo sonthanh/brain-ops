@@ -83,31 +83,9 @@ On merge to main, the release workflow:
 5. Notifies via Telegram on failure
 6. brain repo automatically picks up changes via `@v0`
 
-## File Structure
+## Key Paths
 
-```
-src/
-  gmail-fetch.ts              ← Fetch unread emails from Gmail API
-  gmail-clean.ts              ← Execute triage actions (archive, star, label, etc.)
-  lib/
-    gmail-client.ts           ← Shared Gmail API client setup
-    types.ts                  ← Shared type definitions
-tests/
-  gmail-fetch.test.ts
-  gmail-clean.test.ts
-actions/
-  gmail-fetch/
-    action.yml              ← Composite action wrapper
-    dist/gmail-fetch.mjs    ← Bundled script
-  gmail-clean/
-    action.yml
-    dist/gmail-clean.mjs
-  telegram-send/
-    action.yml              ← Simple curl-based notification
-.github/
-  workflows/
-    ci.yml                    ← PR gate: lint + typecheck + test + danger-scan
-    release.yml               ← Auto-release on merge to main (pushes directly)
-scripts/
-  build.ts                    ← Bundle src/ into action dist/
-```
+- `src/` — TypeScript source (gmail-fetch, gmail-clean, lib/)
+- `actions/*/dist/` — Bundled output (never edit directly)
+- `tests/` — Unit + dry-run tests
+- `.github/workflows/` — CI (ci.yml) + release (release.yml)
