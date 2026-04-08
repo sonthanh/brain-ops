@@ -84,7 +84,7 @@ run_journal() {
     attempt=$((attempt + 1))
     log "$date_str" "Attempt $attempt/$MAX_RETRIES"
 
-    if cd "$VAULT" && claude -p "/journal $date_str" --model claude-opus-4-6 >> "$LOG_DIR/$date_str.log" 2>&1; then
+    if cd "$VAULT" && claude --dangerously-skip-permissions --effort=max -p "/journal $date_str" --model claude-opus-4-6 >> "$LOG_DIR/$date_str.log" 2>&1; then
       log "$date_str" "Journal completed successfully"
       return 0
     fi
