@@ -127,6 +127,14 @@ dates_between() {
 
 # --- Main ---
 
+# Skip if already ran today (StartAtLoad can trigger duplicate runs on login)
+TODAY_MARKER="$LOG_DIR/.last-run"
+TODAY=$(date "+%Y-%m-%d")
+if [[ -f "$TODAY_MARKER" && "$(cat "$TODAY_MARKER")" == "$TODAY" ]]; then
+  echo "Already ran today ($TODAY), skipping"
+  exit 0
+fi
+
 yesterday=$(date -j -v-1d "+%Y-%m-%d")
 
 # Check for gaps (backfill)
@@ -152,3 +160,6 @@ else
     echo "No activity on $yesterday, skipping"
   fi
 fi
+
+# Mark today as done
+echo "$TODAY" > "$TODAY_MARKER"
