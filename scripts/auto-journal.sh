@@ -33,16 +33,14 @@ send_telegram() {
     echo "Telegram credentials not configured" >&2
     return 1
   fi
+  local payload
+  payload=$(jq -n \
+    --argjson chat_id "${TG_CHAT_ID}" \
+    --arg text "$msg" \
+    '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
   curl -sf -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
     -H "Content-Type: application/json" \
-    -d "$(python3 -c "
-import json, os
-print(json.dumps({
-    'chat_id': int(os.environ['TG_CHAT_ID']),
-    'text': os.environ['TG_MSG'],
-    'parse_mode': 'Markdown'
-}))
-" )" || echo "Telegram send failed" >&2
+    -d "$payload" || echo "Telegram send failed" >&2
 }
 
 has_activity() {
