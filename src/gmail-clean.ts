@@ -8,11 +8,13 @@ import type { TriageAction, ExecutionResult, CleanupStats } from "./lib/types.ts
 const CONCURRENCY = 10;
 const RETENTION_DAYS = 7;
 
-/** Label IDs for actions that just modify labels on a message. */
+/** Label IDs for actions that just modify labels on a message.
+ *  Every action removes UNREAD so processed emails don't reappear in
+ *  `is:unread in:inbox` fetches or confuse `label:unread` searches. */
 const LABEL_ACTIONS: Record<string, { add?: string[]; remove?: string[] }> = {
-  archive: { remove: ["INBOX"] },
-  star: { add: ["STARRED"] },
-  "mark-important": { add: ["IMPORTANT"] },
+  archive: { remove: ["INBOX", "UNREAD"] },
+  star: { add: ["STARRED"], remove: ["UNREAD"] },
+  "mark-important": { add: ["IMPORTANT"], remove: ["UNREAD"] },
 };
 
 function extractSender(value: string): string | undefined {
@@ -59,7 +61,7 @@ export async function executeAction(
       await gmail.users.messages.modify({
         userId: "me",
         id: action.id,
-        requestBody: { addLabelIds: [labelId] },
+        requestBody: { addLabelIds: [labelId], removeLabelIds: ["UNREAD"] },
       });
       return { ok: true };
     }
