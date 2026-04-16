@@ -87,6 +87,18 @@ export function parseDraftRequests(raw: unknown): DraftRequest[] {
   });
 }
 
+export interface SlaThreadMessage {
+  from: string;
+  to: string;
+  date: string;
+  auto_submitted: boolean;
+}
+
+export interface SlaThread {
+  message_id: string;
+  thread_messages: SlaThreadMessage[];
+}
+
 export type ExecutionResult =
   | { ok: true }
   | { ok: false; reason: string };

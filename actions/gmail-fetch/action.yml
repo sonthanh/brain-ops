@@ -5,6 +5,10 @@ inputs:
   credentials-path:
     description: Path to Gmail OAuth credentials JSON file
     required: true
+  sla-ledger-path:
+    description: Path to sla-open.md in the checked-out vault repo (for resolution detection thread fetching)
+    required: false
+    default: ""
   dry-run:
     description: Run without making API calls
     required: false
@@ -12,8 +16,11 @@ inputs:
 
 outputs:
   emails-json:
-    description: Path to the output JSON file
+    description: Path to the output JSON file with new unread emails
     value: ${{ steps.fetch.outputs.emails-json }}
+  sla-threads-json:
+    description: Path to the SLA thread data JSON file (empty array if no open items)
+    value: ${{ steps.fetch.outputs.sla-threads-json }}
   count:
     description: Number of emails fetched
     value: ${{ steps.fetch.outputs.count }}
@@ -31,13 +38,21 @@ runs:
       shell: bash
       env:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
+        SLA_LEDGER_PATH: ${{ inputs.sla-ledger-path }}
         ACTION_PATH: ${{ github.action_path }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         FLAGS=""
         if [ "$DRY_RUN" = "true" ]; then FLAGS="--dry-run"; fi
+        if [ -n "$SLA_LEDGER_PATH" ] && [ -f "$SLA_LEDGER_PATH" ]; then
+          FLAGS="$FLAGS --sla-ledger=$SLA_LEDGER_PATH"
+        fi
         node "${ACTION_PATH}/dist/gmail-fetch.mjs" $FLAGS > /tmp/emails.json
+        # SLA threads file is produced as side-effect when --sla-ledger is set
+        if [ ! -f /tmp/sla-threads.json ]; then echo "[]" > /tmp/sla-threads.json; fi
         COUNT=$(python3 -c 'import json; print(len(json.load(open("/tmp/emails.json"))))')
+        SLA_COUNT=$(python3 -c 'import json; print(len(json.load(open("/tmp/sla-threads.json"))))')
         echo "emails-json=/tmp/emails.json" >> $GITHUB_OUTPUT
+        echo "sla-threads-json=/tmp/sla-threads.json" >> $GITHUB_OUTPUT
         echo "count=$COUNT" >> $GITHUB_OUTPUT
-        echo "Fetched $COUNT emails"
+        echo "Fetched $COUNT emails, $SLA_COUNT SLA threads"
