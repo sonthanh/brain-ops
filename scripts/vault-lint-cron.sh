@@ -46,6 +46,10 @@ log() {
 
 send_telegram() {
   local msg="$1"
+  if (( DRY_RUN == 1 )); then
+    log "telegram (dry-run): would send: ${msg//$'\n'/ }"
+    return 0
+  fi
   if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
     log "telegram: credentials missing — skipping alert"
     return 1
