@@ -135,6 +135,34 @@ if [[ -f "$TODAY_MARKER" && "$(cat "$TODAY_MARKER")" == "$TODAY" ]]; then
   exit 0
 fi
 
+# Weekly quota gate — skip cleanly when subscription near cap instead of
+# burning 3× claude retries and paging Telegram. Mirrors pickup-auto's gate
+# (same USAGE_FILE format). Skip path does NOT touch .last-run so the next
+# scheduled run can still backfill.
+USAGE_FILE="${AUTO_JOURNAL_USAGE_FILE:-$HOME/.cache/ccstatusline/usage.json}"
+WEEKLY_THRESHOLD="${AUTO_JOURNAL_THRESHOLD:-80}"
+if [[ -f "$USAGE_FILE" ]] && command -v jq >/dev/null 2>&1; then
+  DECISION=$(jq -r --argjson threshold "$WEEKLY_THRESHOLD" '
+    def reset_epoch:
+      if .weeklyResetAt then
+        (.weeklyResetAt | sub("\\..*$"; "Z") | fromdateiso8601)
+      else 0 end;
+    (.weeklyUsage // 0) as $u |
+    reset_epoch as $r |
+    if $u >= $threshold and (now < $r) then
+      "skip:" + ($u|tostring) + ":" + (.weeklyResetAt // "unknown")
+    else
+      "run:" + ($u|tostring)
+    end
+  ' "$USAGE_FILE" 2>/dev/null || echo "run:parse-error")
+  case "$DECISION" in
+    skip:*)
+      echo "SKIP — weekly usage ${DECISION#skip:} (>= ${WEEKLY_THRESHOLD}%)"
+      exit 0
+      ;;
+  esac
+fi
+
 yesterday=$(date -j -v-1d "+%Y-%m-%d")
 
 # Check for gaps (backfill)
