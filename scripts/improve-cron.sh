@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # improve-cron.sh — runs weekly Sunday 04:00 local via launchd (com.brain.improve).
-# Invokes /improve via `claude -p` to kick the skill-learning loop.
+# Invokes /improve in full auto-batch mode: Phase 1 ranks, then the wrapper
+# re-invokes /improve <top-candidate> for full Phase 1-5 on the chosen skill.
 #
-# Gates:
-#   • Same-week dedup (.last-run marker, written only on success)
-#   • Weekly quota skip (ccstatusline cache, env-overridable threshold)
+# Gates (in order):
+#   1. Same-week dedup (.last-run marker, written only on success)
+#   2. Weekly quota skip (ccstatusline cache, env-overridable threshold)
+#   3. GUARD — /improve evals must exist with >= MIN cases
+#   4. GUARD — no recent human commits to skills/improve/ without Claude
+#      co-author (signals user had to correct /improve; auto must stop and
+#      wait for user review). See issue sonthanh/ai-brain#8 "red flag" req.
 #
 # Flags:
-#   --dry-run        exit before `claude -p`; still writes log lines so the
-#                    acceptance checklist can verify PATH + gate + log format
-#                    without burning quota.
+#   --dry-run        exit before `claude -p`; still exercises guards + logs
+#                    for acceptance tests without burning quota.
 #
 # Log format matches pickup-auto/cron.log so render-status.sh auto-parses.
 
@@ -25,6 +29,10 @@ ENV_FILE="${IMPROVE_ENV_FILE:-$HOME/.config/brain/env}"
 USAGE_FILE="${IMPROVE_USAGE_FILE:-$HOME/.cache/ccstatusline/usage.json}"
 WEEKLY_THRESHOLD="${IMPROVE_THRESHOLD:-80}"
 MODEL="${IMPROVE_MODEL:-sonnet}"
+PLUGIN_REPO="${IMPROVE_PLUGIN_REPO:-$HOME/work/brain-os-plugin}"
+IMPROVE_EVALS="$PLUGIN_REPO/skills/improve/evals/evals.json"
+MIN_EVAL_CASES="${IMPROVE_MIN_EVAL_CASES:-5}"
+REVIEW_WINDOW="${IMPROVE_REVIEW_WINDOW:-14 days ago}"
 
 DRY_RUN=0
 for arg in "$@"; do
@@ -46,6 +54,10 @@ log() {
 
 send_telegram() {
   local msg="$1"
+  if (( DRY_RUN == 1 )); then
+    log "telegram (dry-run): would send: ${msg//$'\n'/ }"
+    return 0
+  fi
   if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then
     log "telegram: credentials missing — skipping alert"
     return 1
@@ -120,24 +132,102 @@ else
   log "WARN: no usage cache at $USAGE_FILE — proceeding without gate"
 fi
 
+# ---- GUARD 1: /improve must have an eval test with >= MIN_EVAL_CASES.
+# Auto-improve of /improve itself would run Phase 4's eval gate, which needs
+# evals to exist. If absent/insufficient, stop and ask for review.
+if [[ ! -f "$IMPROVE_EVALS" ]]; then
+  log "GUARD-1 FAIL: $IMPROVE_EVALS missing — halting auto-improve"
+  send_telegram "*Improve Halted*: \`skills/improve/evals/evals.json\` missing. Auto-improve needs evals on \`/improve\` itself. Add cases then re-enable cron."
+  log "=== improve done (halted: no evals) ==="
+  exit 0
+fi
+EVAL_CASES=$(jq 'length' "$IMPROVE_EVALS" 2>/dev/null || echo 0)
+if (( EVAL_CASES < MIN_EVAL_CASES )); then
+  log "GUARD-1 FAIL: $EVAL_CASES eval cases (need >= $MIN_EVAL_CASES) — halting"
+  send_telegram "*Improve Halted*: only $EVAL_CASES eval cases for \`/improve\` (min $MIN_EVAL_CASES). Add more cases then re-enable cron."
+  log "=== improve done (halted: insufficient evals) ==="
+  exit 0
+fi
+log "guard-1 ok: $EVAL_CASES eval cases present"
+
+# ---- GUARD 2: RED FLAG — recent user corrections to skills/improve/.
+# If the user has made commits to /improve's skill dir without Claude as
+# co-author in the review window, it signals /improve is unreliable right
+# now. Auto must halt and wait for explicit user review.
+USER_CORRECTIONS=0
+if [[ -d "$PLUGIN_REPO/.git" ]]; then
+  while IFS= read -r HASH; do
+    [[ -z "$HASH" ]] && continue
+    if ! git -C "$PLUGIN_REPO" show -s --format="%B" "$HASH" 2>/dev/null \
+         | grep -qE "Co-Authored-By:.*Claude"; then
+      USER_CORRECTIONS=$((USER_CORRECTIONS + 1))
+    fi
+  done < <(git -C "$PLUGIN_REPO" log \
+             --since="$REVIEW_WINDOW" \
+             --format="%H" \
+             -- skills/improve/ 2>/dev/null)
+fi
+if (( USER_CORRECTIONS > 0 )); then
+  log "GUARD-2 FAIL (red flag): $USER_CORRECTIONS non-Claude commit(s) to skills/improve/ since '$REVIEW_WINDOW' — halting"
+  send_telegram "*Improve Halted*: $USER_CORRECTIONS user correction(s) to \`/improve\` since $REVIEW_WINDOW. Auto-improve paused. Review and clear before next cron."
+  log "=== improve done (halted: user corrections) ==="
+  exit 0
+fi
+log "guard-2 ok: no user corrections to skills/improve/ since $REVIEW_WINDOW"
+
 # ---- Dry-run short-circuit (acceptance-test path)
 if (( DRY_RUN == 1 )); then
-  log "dry-run: skipping claude invocation; would run: claude --dangerously-skip-permissions --model $MODEL -p /improve"
+  log "dry-run: skipping claude invocation; would orchestrate: step1=claude -p /improve → parse top candidate → step2=claude -p /improve <top>"
   log "=== improve done (dry-run) ==="
   exit 0
 fi
 
-# ---- Invoke /improve (no arg → Phase 1 rank-only across all outcome logs)
-log "invoking: claude --dangerously-skip-permissions --model $MODEL -p /improve"
-if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve" >> "$LOG_FILE" 2>&1; then
-  log "improve completed successfully"
+# ---- Step 1: Phase 1 rank-only, capture output to parse top candidate.
+# We ask the skill to emit a parseable marker line `TOP_CANDIDATE: <name>` so
+# this wrapper can deterministically orchestrate step 2 regardless of prose
+# variance. If the marker is missing we treat as rank-only + notify.
+STEP1_OUT=$(mktemp -t improve-step1.XXXXXX)
+trap 'rm -f "$STEP1_OUT"' EXIT
+
+STEP1_PROMPT="/improve
+
+Rank skills by failure rate per Phase 1 and stop (do NOT run Phase 2-5). At the end of your output, emit exactly one line in this format:
+TOP_CANDIDATE: <skill-name>
+— or —
+TOP_CANDIDATE: none
+Nothing after that line."
+
+log "step 1: ranking skills via /improve"
+if ! cd "$VAULT" || ! claude --dangerously-skip-permissions --model "$MODEL" -p "$STEP1_PROMPT" > "$STEP1_OUT" 2>&1; then
+  RC=$?
+  log "step 1 failed (exit=$RC); see tail below"
+  tail -30 "$STEP1_OUT" >> "$LOG_FILE"
+  send_telegram "*Improve Failed*: Phase 1 ranking exited $RC. Check \`$LOG_FILE\`."
+  log "=== improve done (failed: step 1) ==="
+  exit "$RC"
+fi
+cat "$STEP1_OUT" >> "$LOG_FILE"
+
+TOP=$(grep -oE '^TOP_CANDIDATE:[[:space:]]*[A-Za-z0-9_.-]+' "$STEP1_OUT" | tail -1 | awk '{print $NF}')
+if [[ -z "$TOP" || "$TOP" == "none" ]]; then
+  log "step 1: no top candidate (TOP='${TOP:-<missing marker>}') — ending batch"
+  echo "$THIS_WEEK" > "$LAST_RUN"
+  log "=== improve done (no candidate) ==="
+  exit 0
+fi
+log "step 1: top candidate = $TOP"
+
+# ---- Step 2: full Phase 1-5 pipeline on top candidate.
+log "step 2: invoking /improve $TOP (full pipeline)"
+if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve $TOP" >> "$LOG_FILE" 2>&1; then
+  log "improve completed successfully (candidate=$TOP)"
   echo "$THIS_WEEK" > "$LAST_RUN"
   log "=== improve done ==="
   exit 0
 else
   RC=$?
-  log "improve failed (exit=$RC)"
-  send_telegram "*Improve Failed*: \`/improve\` cron exited $RC on $(date +%Y-%m-%d) ($THIS_WEEK). Check \`$LOG_FILE\`."
+  log "improve failed on $TOP (exit=$RC)"
+  send_telegram "*Improve Failed*: \`/improve $TOP\` cron exited $RC on $(date +%Y-%m-%d) ($THIS_WEEK). Check \`$LOG_FILE\`."
   log "=== improve done (failed) ==="
   exit "$RC"
 fi
