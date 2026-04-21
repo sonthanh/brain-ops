@@ -34,12 +34,16 @@ function buildThreadPayload(m: MockThreadMessage) {
   };
 }
 
+// `aliveDrafts` maps a draft id to the body it currently holds. That body is
+// what lifecycle-check must fetch (via drafts.get) to populate
+// `draftBodyExcerpt` for sent-edited signals — the ledger stores a one-way
+// hash only, so the live draft is the single source of the raw text.
 function createMockGmail(options: {
-  aliveDraftIds?: Set<string>;
+  aliveDrafts?: Map<string, { body: string }>;
   threadMessages?: Record<string, MockThreadMessage[]>;
 }) {
   const calls: MockCall[] = [];
-  const alive = options.aliveDraftIds ?? new Set();
+  const alive = options.aliveDrafts ?? new Map();
   const threads = options.threadMessages ?? {};
 
   const gmail = {
@@ -47,12 +51,25 @@ function createMockGmail(options: {
       drafts: {
         get: async (args: { userId: string; id: string }) => {
           calls.push({ method: "drafts.get", args });
-          if (!alive.has(args.id)) {
+          const d = alive.get(args.id);
+          if (!d) {
             const err = new Error("Not Found") as Error & { code: number };
             err.code = 404;
             throw err;
           }
-          return { data: { id: args.id, message: { id: `msg-${args.id}` } } };
+          return {
+            data: {
+              id: args.id,
+              message: {
+                id: `msg-${args.id}`,
+                payload: {
+                  mimeType: "text/plain",
+                  headers: [],
+                  body: { data: Buffer.from(d.body, "utf-8").toString("base64url") },
+                },
+              },
+            },
+          };
         },
         delete: async (args: { userId: string; id: string }) => {
           calls.push({ method: "drafts.delete", args });
@@ -106,7 +123,7 @@ describe("gmail-lifecycle-check", () => {
     test("drafts.get 404 + no me/team reply → type:deleted signal to classify", async () => {
       const row = ledgerRow({ draftId: "d1", threadId: "t1" });
       const { gmail, calls } = createMockGmail({
-        aliveDraftIds: new Set(),
+        aliveDrafts: new Map(),
         threadMessages: {
           t1: [
             {
@@ -138,7 +155,7 @@ describe("gmail-lifecycle-check", () => {
       // The external party following up shouldn't count as a response.
       const row = ledgerRow({ draftId: "d1e", threadId: "t1e" });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(),
+        aliveDrafts: new Map(),
         threadMessages: {
           t1e: [
             {
@@ -176,7 +193,7 @@ describe("gmail-lifecycle-check", () => {
         bodyHash: hashBody(body),
       });
       const { gmail, calls } = createMockGmail({
-        aliveDraftIds: new Set(["d2"]),
+        aliveDrafts: new Map([["d2", { body }]]),
         threadMessages: {
           t2: [
             {
@@ -216,7 +233,7 @@ describe("gmail-lifecycle-check", () => {
       const body = "OK.";
       const row = ledgerRow({ draftId: "d2b", threadId: "t2b", bodyHash: hashBody(body) });
       const { gmail, calls } = createMockGmail({
-        aliveDraftIds: new Set(),
+        aliveDrafts: new Map(),
         threadMessages: {
           t2b: [
             {
@@ -256,7 +273,7 @@ describe("gmail-lifecycle-check", () => {
         "\n\nOn Apr 20, External Sender <external@test.com> wrote:\n> please advise";
       const row = ledgerRow({ draftId: "d2q", threadId: "t2q", bodyHash: hashBody(draftBody) });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d2q"]),
+        aliveDrafts: new Map([["d2q", { body: draftBody }]]),
         threadMessages: {
           t2q: [
             {
@@ -296,7 +313,7 @@ describe("gmail-lifecycle-check", () => {
         bodyHash: hashBody(draftBody),
       });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d3"]),
+        aliveDrafts: new Map([["d3", { body: draftBody }]]),
         threadMessages: {
           t3: [
             {
@@ -334,7 +351,7 @@ describe("gmail-lifecycle-check", () => {
       const longDraft = "B".repeat(500);
       const row = ledgerRow({ draftId: "d3b", threadId: "t3b", bodyHash: hashBody(longDraft) });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d3b"]),
+        aliveDrafts: new Map([["d3b", { body: longDraft }]]),
         threadMessages: {
           t3b: [
             {
@@ -360,10 +377,48 @@ describe("gmail-lifecycle-check", () => {
         now: NOW,
       });
       expect(result.draftSignals[0]?.sentBodyExcerpt?.length).toBe(300);
-      // draftBodyExcerpt sources from the user-observed edit — may be synthesized
-      // from the ledger context (we don't have the raw draft body anymore once
-      // it's sent+gone); excerpt length cap still applies.
-      expect((result.draftSignals[0]?.draftBodyExcerpt ?? "").length).toBeLessThanOrEqual(300);
+      expect(result.draftSignals[0]?.draftBodyExcerpt?.length).toBe(300);
+    });
+
+    test("draft 404'd before detection → draftBodyExcerpt undefined, sentBodyExcerpt still captured", async () => {
+      // If the draft is already gone (e.g., user sent via the draft — Gmail
+      // promotes draft to sent and 404s the draft_id), we can no longer fetch
+      // the original draft text. Only the sent body is available.
+      const sentBody = "edited reply text";
+      const row = ledgerRow({
+        draftId: "d3c",
+        threadId: "t3c",
+        bodyHash: hashBody("original draft text"),
+      });
+      const { gmail } = createMockGmail({
+        aliveDrafts: new Map(),
+        threadMessages: {
+          t3c: [
+            {
+              id: "m-orig",
+              from: "external@test.com",
+              internalDateMs: Date.parse("2026-04-20T09:00:00Z"),
+              body: "Original",
+            },
+            {
+              id: "m-reply",
+              from: "thanh@emvn.co",
+              internalDateMs: Date.parse("2026-04-21T09:00:00Z"),
+              body: sentBody,
+            },
+          ],
+        },
+      });
+      const result = await checkLifecycle({
+        ledgerRows: [row],
+        // @ts-expect-error
+        gmail,
+        identities: IDENTITIES,
+        now: NOW,
+      });
+      expect(result.draftSignals[0]?.type).toBe("sent-edited");
+      expect(result.draftSignals[0]?.sentBodyExcerpt).toContain("edited reply text");
+      expect(result.draftSignals[0]?.draftBodyExcerpt).toBeUndefined();
     });
   });
 
@@ -371,7 +426,7 @@ describe("gmail-lifecycle-check", () => {
     test("team reply (not me) → team-handled to CLASSIFY learnings; orphan draft deleted", async () => {
       const row = ledgerRow({ draftId: "d4", threadId: "t4" });
       const { gmail, calls } = createMockGmail({
-        aliveDraftIds: new Set(["d4"]),
+        aliveDrafts: new Map([["d4", { body: "default body" }]]),
         threadMessages: {
           t4: [
             {
@@ -411,7 +466,7 @@ describe("gmail-lifecycle-check", () => {
       const body = "my reply";
       const row = ledgerRow({ draftId: "d4c", threadId: "t4c", bodyHash: hashBody(body) });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d4c"]),
+        aliveDrafts: new Map([["d4c", { body }]]),
         threadMessages: {
           t4c: [
             {
@@ -449,7 +504,7 @@ describe("gmail-lifecycle-check", () => {
         createdAt: "2026-04-01 10:00 UTC", // ~20 days before NOW
       });
       const { gmail, calls } = createMockGmail({
-        aliveDraftIds: new Set(["d5"]),
+        aliveDrafts: new Map([["d5", { body: "default body" }]]),
         threadMessages: {
           t5: [
             {
@@ -482,7 +537,7 @@ describe("gmail-lifecycle-check", () => {
         createdAt: "2026-04-15 10:00 UTC", // ~6 days before NOW
       });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d5b"]),
+        aliveDrafts: new Map([["d5b", { body: "default body" }]]),
         threadMessages: {
           t5b: [
             {
@@ -513,7 +568,7 @@ describe("gmail-lifecycle-check", () => {
         createdAt: "2026-04-17 10:00 UTC", // ~4 days before NOW
       });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d5c"]),
+        aliveDrafts: new Map([["d5c", { body: "default body" }]]),
         threadMessages: {
           t5c: [
             {
@@ -550,7 +605,7 @@ describe("gmail-lifecycle-check", () => {
         createdAt: "2026-04-20 10:00 UTC",
       });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(),
+        aliveDrafts: new Map(),
         threadMessages: {
           "t-filter": [
             {
@@ -586,7 +641,7 @@ describe("gmail-lifecycle-check", () => {
       const body = "reply body";
       const row = ledgerRow({ draftId: "d-name", threadId: "t-name", bodyHash: hashBody(body) });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d-name"]),
+        aliveDrafts: new Map([["d-name", { body }]]),
         threadMessages: {
           "t-name": [
             {
@@ -618,7 +673,7 @@ describe("gmail-lifecycle-check", () => {
     test("From header with quoted display name 'My Nguyễn <my@emvn.co>' parses as team", async () => {
       const row = ledgerRow({ draftId: "d-name-team", threadId: "t-name-team" });
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d-name-team"]),
+        aliveDrafts: new Map([["d-name-team", { body: "default body" }]]),
         threadMessages: {
           "t-name-team": [
             {
@@ -673,7 +728,12 @@ describe("gmail-lifecycle-check", () => {
       writeLedger(ledgerPath, rows);
 
       const { gmail } = createMockGmail({
-        aliveDraftIds: new Set(["d-asis", "d-edit", "d-team", "d-stale"]),
+        aliveDrafts: new Map([
+          ["d-asis", { body: asisBody }],
+          ["d-edit", { body: editedDraftBody }],
+          ["d-team", { body: "default body" }],
+          ["d-stale", { body: "default body" }],
+        ]),
         threadMessages: {
           "t-del": [
             {
