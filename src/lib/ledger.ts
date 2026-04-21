@@ -40,7 +40,7 @@ function splitRow(line: string): string[] {
   return masked.split("|").map((c) => c.trim().replace(new RegExp(PIPE_PLACEHOLDER, "g"), "|"));
 }
 
-const QUOTE_START_RE = /^(?:On .+ wrote:\s*|-+\s*Original Message\s*-+\s*|From: .+)$/;
+const QUOTE_START_RE = /^(?:On .+ wrote:\s*|-+\s*Original Message\s*-+\s*)$/;
 
 export function normalizeBody(body: string): string {
   let s = body.replace(/\r\n?/g, "\n");
