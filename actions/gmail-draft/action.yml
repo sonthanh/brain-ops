@@ -8,6 +8,10 @@ inputs:
   drafts-json:
     description: Path to JSON file with draft specifications
     required: true
+  drafts-ledger-path:
+    description: Path to drafts-outstanding.md ledger file (relative to repo root)
+    required: false
+    default: business/intelligence/emails/drafts-outstanding.md
   dry-run:
     description: Run without making API calls
     required: false
@@ -33,6 +37,7 @@ runs:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
         ACTION_PATH: ${{ github.action_path }}
         DRAFTS_JSON: ${{ inputs.drafts-json }}
+        DRAFTS_LEDGER_PATH: ${{ inputs.drafts-ledger-path }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
           FLAGS=""
