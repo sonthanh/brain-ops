@@ -8,6 +8,10 @@ const actions = [
   { entry: "src/gmail-fetch.ts", out: "actions/gmail-fetch/dist/gmail-fetch.mjs" },
   { entry: "src/gmail-clean.ts", out: "actions/gmail-clean/dist/gmail-clean.mjs" },
   { entry: "src/gmail-draft.ts", out: "actions/gmail-draft/dist/gmail-draft.mjs" },
+  {
+    entry: "src/gmail-lifecycle-check.ts",
+    out: "actions/gmail-lifecycle-check/dist/gmail-lifecycle-check.mjs",
+  },
 ];
 
 for (const { entry, out } of actions) {
