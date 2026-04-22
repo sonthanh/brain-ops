@@ -175,11 +175,33 @@ if (( USER_CORRECTIONS > 0 )); then
 fi
 log "guard-2 ok: no user corrections to skills/improve/ since $REVIEW_WINDOW"
 
+# ---- Step 0 probe: count pending feedback files (before dry-run short-circuit
+# so dry-run logs include the count without invoking claude).
+STEP0_PENDING=$(find "$VAULT/daily/feedback-pending" -maxdepth 1 -name '*.md' ! -name 'README.md' 2>/dev/null | wc -l | tr -d ' ')
+log "step 0 probe: $STEP0_PENDING pending feedback file(s) in daily/feedback-pending/"
+
 # ---- Dry-run short-circuit (acceptance-test path)
 if (( DRY_RUN == 1 )); then
-  log "dry-run: skipping claude invocation; would orchestrate: step1=claude -p /improve → parse top candidate → step2=claude -p /improve <top>"
+  log "dry-run: skipping claude invocation; would orchestrate: step0=/improve feedback (if $STEP0_PENDING > 0) → step1=/improve → parse top candidate → step2=/improve <top>"
   log "=== improve done (dry-run) ==="
   exit 0
+fi
+
+# ---- Step 0: Phase 0 — encode pending feedback (before log-driven phases).
+# Runs BEFORE Phase 1 so explicit user feedback takes precedence over inferred
+# log patterns. Failure here is NON-BLOCKING — we still proceed to Phase 1 so
+# Phase 0 bugs don't stall log-based improvements.
+if (( STEP0_PENDING > 0 )); then
+  log "step 0: invoking /improve feedback to encode $STEP0_PENDING file(s)"
+  if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve feedback" >> "$LOG_FILE" 2>&1; then
+    log "step 0 completed"
+  else
+    RC=$?
+    log "step 0 failed (exit=$RC) — continuing to Phase 1 (feedback gate is non-blocking)"
+    send_telegram "*Improve Step 0 Failed*: \`/improve feedback\` cron exited $RC. Continuing to Phase 1. Check \`$LOG_FILE\`."
+  fi
+else
+  log "step 0: no pending feedback — skipping to Phase 1"
 fi
 
 # ---- Step 1: Phase 1 rank-only, capture output to parse top candidate.
