@@ -33,9 +33,12 @@ describe("gmail-clean", () => {
 
       const result = await cleanupEmails({ jsonPath: path, dryRun: true });
 
-      expect(result.total).toBe(3); // needs-reply excluded
+      // needs-reply is now included — it stars the message atomically with the
+      // downstream Draft step (ai-brain#100).
+      expect(result.total).toBe(4);
       expect(result.actions["archive"]).toBe(2);
       expect(result.actions["star"]).toBe(1);
+      expect(result.actions["needs-reply"]).toBe(1);
     });
 
     test("handles empty action list", async () => {
@@ -44,12 +47,13 @@ describe("gmail-clean", () => {
       expect(result.total).toBe(0);
     });
 
-    test("filters out needs-reply actions", async () => {
+    test("needs-reply items are processed (starred) — they are no longer filtered out", async () => {
       const path = writeTriage([
         { action: "needs-reply", id: "1", from: "a@test.com", subject: "Reply me" },
       ]);
       const result = await cleanupEmails({ jsonPath: path, dryRun: true });
-      expect(result.total).toBe(0);
+      expect(result.total).toBe(1);
+      expect(result.actions["needs-reply"]).toBe(1);
     });
   });
 
@@ -79,11 +83,43 @@ describe("gmail-clean", () => {
         { action: "mark-important", id: "4", from: "d@test.com", subject: "D" },
         { action: "unsubscribe", id: "5", from: "e@test.com", subject: "E" },
         { action: "label:work", id: "6", from: "f@test.com", subject: "F" },
+        { action: "needs-reply", id: "7", from: "g@test.com", subject: "G", reply_hint: "confirm" },
+        { action: "read", id: "8", from: "h@test.com", subject: "H" },
       ]);
 
       const result = await cleanupEmails({ jsonPath: path, dryRun: true });
-      expect(result.total).toBe(6);
-      expect(Object.keys(result.actions)).toHaveLength(6);
+      expect(result.total).toBe(8);
+      expect(Object.keys(result.actions)).toHaveLength(8);
+    });
+  });
+
+  describe("taxonomy fields", () => {
+    test("preserves user_category + team_view + user_view when present", async () => {
+      const path = writeTriage([
+        {
+          action: "archive",
+          id: "1",
+          from: "a@test.com",
+          subject: "noise",
+          user_category: "noise",
+          team_view: "N",
+          user_view: "N",
+        },
+        {
+          action: "needs-reply",
+          id: "2",
+          from: "b@test.com",
+          subject: "user must reply",
+          reply_hint: "acknowledge",
+          user_category: "r-user",
+          team_view: "R",
+          user_view: "R",
+        },
+      ]);
+      const result = await cleanupEmails({ jsonPath: path, dryRun: true });
+      expect(result.total).toBe(2);
+      expect(result.actions["archive"]).toBe(1);
+      expect(result.actions["needs-reply"]).toBe(1);
     });
   });
 });

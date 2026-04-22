@@ -40,4 +40,45 @@ describe("parseTriageActions", () => {
   test("throws on non-object item", () => {
     expect(() => parseTriageActions(["string"])).toThrow("expected object");
   });
+
+  test("accepts read action (awareness category)", () => {
+    const result = parseTriageActions([
+      { action: "read", id: "1", from: "a@test.com", subject: "Info" },
+    ]);
+    expect(result[0]!.action).toBe("read");
+  });
+
+  test("preserves dual-perspective taxonomy fields when present", () => {
+    const result = parseTriageActions([
+      {
+        action: "archive",
+        id: "1",
+        from: "a@test.com",
+        subject: "noise",
+        user_category: "noise",
+        team_view: "N",
+        user_view: "N",
+      },
+    ]);
+    expect(result[0]!.user_category).toBe("noise");
+    expect(result[0]!.team_view).toBe("N");
+    expect(result[0]!.user_view).toBe("N");
+  });
+
+  test("drops invalid taxonomy values (backwards-compat for old JSONs)", () => {
+    const result = parseTriageActions([
+      {
+        action: "archive",
+        id: "1",
+        from: "a@test.com",
+        subject: "invalid tax",
+        user_category: "maybe",
+        team_view: "X",
+        user_view: "yes",
+      },
+    ]);
+    expect(result[0]!.user_category).toBeUndefined();
+    expect(result[0]!.team_view).toBeUndefined();
+    expect(result[0]!.user_view).toBeUndefined();
+  });
 });

@@ -10,11 +10,19 @@ const RETENTION_DAYS = 7;
 
 /** Label IDs for actions that just modify labels on a message.
  *  Every action removes UNREAD so processed emails don't reappear in
- *  `is:unread in:inbox` fetches or confuse `label:unread` searches. */
+ *  `is:unread in:inbox` fetches or confuse `label:unread` searches.
+ *
+ *  `needs-reply` adds STARRED here so that draft-existence and star are
+ *  atomic within a single workflow run: the Draft replies step runs after
+ *  cleanup and either creates a Gmail draft or leaves the starred message
+ *  visibly unresolved. Per 2026-04-22 grill (ai-brain#100): "draft existence
+ *  = starred; both or neither." */
 const LABEL_ACTIONS: Record<string, { add?: string[]; remove?: string[] }> = {
   archive: { remove: ["INBOX", "UNREAD"] },
   star: { add: ["STARRED"], remove: ["UNREAD"] },
   "mark-important": { add: ["IMPORTANT"], remove: ["UNREAD"] },
+  "needs-reply": { add: ["STARRED"], remove: ["UNREAD"] },
+  read: { remove: ["UNREAD"] },
 };
 
 function extractSender(value: string): string | undefined {
@@ -92,10 +100,6 @@ export async function executeAction(
       return { ok: true };
     }
 
-    if (action.action === "needs-reply") {
-      return { ok: false, reason: "manual" };
-    }
-
     return { ok: false, reason: `unknown: ${action.action}` };
   } catch (e: unknown) {
     if (e && typeof e === "object" && "code" in e && e.code === 404) {
@@ -147,7 +151,9 @@ export async function cleanupEmails(options: {
   }
 
   const actions: TriageAction[] = parseTriageActions(JSON.parse(readFileSync(fullPath, "utf-8")));
-  const pending = actions.filter((a) => a.action !== "needs-reply");
+  // Every action in the JSON is eligible for cleanup — even needs-reply, which
+  // adds STARRED atomically with the downstream Draft step (per ai-brain#100).
+  const pending = actions;
 
   if (!pending.length) {
     console.log("No pending actions.");

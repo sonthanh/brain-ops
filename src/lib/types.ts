@@ -21,7 +21,11 @@ export type ActionType =
   | "mark-important"
   | "unsubscribe"
   | "needs-reply"
+  | "read"
   | `label:${string}`;
+
+export type UserCategory = "r-user" | "team-sla-at-risk" | "awareness" | "noise";
+export type TaxonomyView = "R" | "A" | "N";
 
 export interface TriageAction {
   action: ActionType;
@@ -29,15 +33,33 @@ export interface TriageAction {
   from: string;
   subject: string;
   reply_hint?: string;
+  /** Dual-perspective taxonomy (optional for backwards-compat with older JSONs; required
+   *  going forward per ai-brain#100). Feeds /status Email Focus filter. */
+  user_category?: UserCategory;
+  team_view?: TaxonomyView;
+  user_view?: TaxonomyView;
 }
 
 const VALID_ACTIONS = new Set([
-  "archive", "delete", "star", "mark-important", "unsubscribe", "needs-reply",
+  "archive", "delete", "star", "mark-important", "unsubscribe", "needs-reply", "read",
 ]);
 
 function isValidAction(value: unknown): value is ActionType {
   if (typeof value !== "string") return false;
   return VALID_ACTIONS.has(value) || value.startsWith("label:");
+}
+
+const VALID_CATEGORIES = new Set<UserCategory>([
+  "r-user", "team-sla-at-risk", "awareness", "noise",
+]);
+const VALID_VIEWS = new Set<TaxonomyView>(["R", "A", "N"]);
+
+function isUserCategory(v: unknown): v is UserCategory {
+  return typeof v === "string" && VALID_CATEGORIES.has(v as UserCategory);
+}
+
+function isTaxonomyView(v: unknown): v is TaxonomyView {
+  return typeof v === "string" && VALID_VIEWS.has(v as TaxonomyView);
 }
 
 export function parseTriageActions(raw: unknown): TriageAction[] {
@@ -48,7 +70,10 @@ export function parseTriageActions(raw: unknown): TriageAction[] {
     if (!item || typeof item !== "object") {
       throw new Error(`Action [${i}]: expected object`);
     }
-    const { action, id, from, subject, reply_hint } = item as Record<string, unknown>;
+    const {
+      action, id, from, subject, reply_hint,
+      user_category, team_view, user_view,
+    } = item as Record<string, unknown>;
     if (typeof id !== "string" || !id) throw new Error(`Action [${i}]: missing id`);
     if (!isValidAction(action)) throw new Error(`Action [${i}]: invalid action "${action}"`);
     if (typeof from !== "string") throw new Error(`Action [${i}]: missing from`);
@@ -59,6 +84,9 @@ export function parseTriageActions(raw: unknown): TriageAction[] {
       from,
       subject,
       ...(typeof reply_hint === "string" ? { reply_hint } : {}),
+      ...(isUserCategory(user_category) ? { user_category } : {}),
+      ...(isTaxonomyView(team_view) ? { team_view } : {}),
+      ...(isTaxonomyView(user_view) ? { user_view } : {}),
     };
   });
 }

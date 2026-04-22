@@ -98,10 +98,41 @@ describe("executeAction", () => {
     expect(createCalled).toBe(false);
   });
 
-  test("needs-reply returns manual reason", async () => {
-    const gmail = mockGmail();
+  test("needs-reply stars message + removes UNREAD (atomic with draft step)", async () => {
+    let addedLabels: string[] = [];
+    let removedLabels: string[] = [];
+    const gmail = mockGmail({
+      modify: (params: {
+        requestBody: { addLabelIds?: string[]; removeLabelIds?: string[] };
+      }) => {
+        addedLabels = params.requestBody.addLabelIds ?? [];
+        removedLabels = params.requestBody.removeLabelIds ?? [];
+        return Promise.resolve({});
+      },
+    });
     const result = await executeAction(gmail, action("needs-reply"), new Map());
-    expect(result).toEqual({ ok: false, reason: "manual" });
+    expect(result.ok).toBe(true);
+    expect(addedLabels).toContain("STARRED");
+    expect(removedLabels).toContain("UNREAD");
+  });
+
+  test("read removes UNREAD only (stays in inbox)", async () => {
+    let addedLabels: string[] = [];
+    let removedLabels: string[] = [];
+    const gmail = mockGmail({
+      modify: (params: {
+        requestBody: { addLabelIds?: string[]; removeLabelIds?: string[] };
+      }) => {
+        addedLabels = params.requestBody.addLabelIds ?? [];
+        removedLabels = params.requestBody.removeLabelIds ?? [];
+        return Promise.resolve({});
+      },
+    });
+    const result = await executeAction(gmail, action("read"), new Map());
+    expect(result.ok).toBe(true);
+    expect(addedLabels).toHaveLength(0);
+    expect(removedLabels).toContain("UNREAD");
+    expect(removedLabels).not.toContain("INBOX");
   });
 
   test("unknown action returns error", async () => {
