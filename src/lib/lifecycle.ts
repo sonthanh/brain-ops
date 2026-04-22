@@ -129,6 +129,11 @@ async function fetchThreadMessagesAfter(
 
   const out: ClassifiedMessage[] = [];
   for (const m of messages) {
+    // Gmail returns live drafts in threads.get with labelIds=["DRAFT"]. They
+    // are not sent messages — ignore them or we misclassify the draft's own
+    // body as a me-reply, match the hash (it IS the draft body), and emit a
+    // spurious sent-as-is signal. Real-world regression caught 2026-04-22.
+    if (m.labelIds?.includes("DRAFT")) continue;
     const dateStr = m.internalDate;
     const dateMs = typeof dateStr === "string" ? parseInt(dateStr, 10) : 0;
     if (Number.isNaN(afterMs) || dateMs <= afterMs) continue;

@@ -19,6 +19,7 @@ interface MockThreadMessage {
   from: string;
   internalDateMs: number;
   body: string;
+  labelIds?: string[];
 }
 
 function buildThreadPayload(m: MockThreadMessage) {
@@ -26,6 +27,7 @@ function buildThreadPayload(m: MockThreadMessage) {
     id: m.id,
     threadId: undefined,
     internalDate: String(m.internalDateMs),
+    labelIds: m.labelIds ?? ["INBOX"],
     payload: {
       mimeType: "text/plain",
       headers: [{ name: "From", value: m.from }],
@@ -700,6 +702,101 @@ describe("gmail-lifecycle-check", () => {
       });
       expect(result.classifySignals[0]?.type).toBe("team-handled");
       expect(result.classifySignals[0]?.responder).toBe("my@emvn.co");
+    });
+  });
+
+  describe("DRAFT-labeled message filter (regression test — real-world bug 2026-04-22)", () => {
+    test("a message with labelIds=['DRAFT'] is NOT a me-reply (the draft itself, not a sent reply)", async () => {
+      // Real bug caught in live verification on 2026-04-22: Gmail returns
+      // drafts as messages in threads.get with labelIds=["DRAFT"]. Without
+      // filtering these out, lifecycle-check saw the draft's own body,
+      // classified the From header as me (it IS me — user authored the
+      // draft), matched the hash (of course — it's the same body), emitted
+      // a spurious sent-as-is signal, and auto-deleted the "orphan" draft
+      // the user hadn't touched.
+      const draftBody = "Test draft the user has not touched.";
+      const row = ledgerRow({
+        draftId: "d-draftfilter",
+        threadId: "t-draftfilter",
+        bodyHash: hashBody(draftBody),
+      });
+      const { gmail, calls } = createMockGmail({
+        aliveDrafts: new Map([["d-draftfilter", { body: draftBody }]]),
+        threadMessages: {
+          "t-draftfilter": [
+            {
+              id: "m-orig",
+              from: "external@test.com",
+              internalDateMs: Date.parse("2026-04-20T09:00:00Z"),
+              body: "Original",
+              labelIds: ["INBOX"],
+            },
+            {
+              // The Gmail draft itself, surfaced by threads.get with DRAFT label
+              id: "m-the-draft",
+              from: "thanh@emvn.co",
+              internalDateMs: Date.parse("2026-04-21T09:00:00Z"),
+              body: draftBody,
+              labelIds: ["DRAFT"],
+            },
+          ],
+        },
+      });
+      const result = await checkLifecycle({
+        ledgerRows: [row],
+        // @ts-expect-error
+        gmail,
+        identities: IDENTITIES,
+        now: NOW,
+      });
+      // Not sent-as-is: the draft is still alive and untouched.
+      expect(result.draftSignals).toHaveLength(0);
+      expect(result.classifySignals).toHaveLength(0);
+      // Ledger row preserved.
+      expect(result.processedDraftIds).toEqual([]);
+      // No orphan delete call — the draft should remain for the user to act on.
+      expect(calls.find((c) => c.method === "drafts.delete")).toBeUndefined();
+      expect(result.orphanDraftsDeleted).toEqual([]);
+    });
+
+    test("a SENT-labeled me-reply with matching hash still fires sent-as-is", async () => {
+      // Sanity: the DRAFT filter must not break the real sent-as-is path.
+      const body = "Actually sent reply text.";
+      const row = ledgerRow({
+        draftId: "d-sentlabel",
+        threadId: "t-sentlabel",
+        bodyHash: hashBody(body),
+      });
+      const { gmail } = createMockGmail({
+        aliveDrafts: new Map(),
+        threadMessages: {
+          "t-sentlabel": [
+            {
+              id: "m-orig",
+              from: "external@test.com",
+              internalDateMs: Date.parse("2026-04-20T09:00:00Z"),
+              body: "Original",
+              labelIds: ["INBOX"],
+            },
+            {
+              id: "m-sent",
+              from: "thanh@emvn.co",
+              internalDateMs: Date.parse("2026-04-21T09:00:00Z"),
+              body,
+              labelIds: ["SENT"],
+            },
+          ],
+        },
+      });
+      const result = await checkLifecycle({
+        ledgerRows: [row],
+        // @ts-expect-error
+        gmail,
+        identities: IDENTITIES,
+        now: NOW,
+      });
+      expect(result.draftSignals[0]?.type).toBe("sent-as-is");
+      expect(result.processedDraftIds).toEqual(["d-sentlabel"]);
     });
   });
 
