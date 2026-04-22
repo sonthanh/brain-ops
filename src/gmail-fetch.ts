@@ -1,5 +1,6 @@
 import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync } from "node:fs";
+import { detectSlaPrefilter } from "./lib/sla-prefilter.ts";
 import type { Email, SlaThread, SlaThreadMessage } from "./lib/types.ts";
 
 const BATCH_SIZE = 20;
@@ -51,13 +52,17 @@ export async function fetchUnreadEmails(options: {
         const header = (name: string): string =>
           headers.find((h) => h.name === name)?.value || "";
 
+        const from = header("From");
+        const prefilterHint = detectSlaPrefilter(from);
+
         emails.push({
           id,
-          from: header("From"),
+          from,
           subject: header("Subject"),
           snippet: d.data.snippet || "",
           date: header("Date"),
           labels: d.data.labelIds || [],
+          ...(prefilterHint ? { sla_prefilter_hint: prefilterHint } : {}),
         });
       }
     }

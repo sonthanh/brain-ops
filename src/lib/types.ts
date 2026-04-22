@@ -5,6 +5,13 @@ export interface Email {
   snippet: string;
   date: string;
   labels: string[];
+  /**
+   * Deterministic SLA-tier hint set by `detectSlaPrefilter` before LLM classification.
+   * When "none", the classifier MUST assign `sla_tier: none` (skip SLA tracking) —
+   * catches mechanical false positives (SaaS-platform automation) that the LLM
+   * otherwise mis-tags as `normal`. Absent for everything else.
+   */
+  sla_prefilter_hint?: "none";
 }
 
 export type ActionType =
