@@ -158,3 +158,12 @@ export function mergeLedger(
   for (const row of newRows) byId.set(row.draftId, row);
   return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
+
+export function removeProcessedRows(
+  rows: DraftLedgerRow[],
+  processedIds: readonly string[],
+): DraftLedgerRow[] {
+  if (processedIds.length === 0) return rows.slice();
+  const drop = new Set(processedIds);
+  return rows.filter((r) => !drop.has(r.draftId));
+}
