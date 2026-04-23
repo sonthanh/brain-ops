@@ -169,4 +169,66 @@ describe("sla-refresh CLI — end-to-end", () => {
     expect(updated).toContain("guard #4");
     expect(updated).toContain("auto-replied");
   });
+
+  test("rule sweep drops awareness / automation / invitation rows and logs them", async () => {
+    // Ledger with 3 violator rows: (1) awareness category, (2) automation
+    // sender, (3) Interview Invitation subject. Sweep must drop all three and
+    // append a `SLA rule-sweep drop log` block.
+    const violatorLedger = `---
+title: SLA Open Items
+created: 2026-04-15
+updated: 2026-04-23 09:00 UTC
+tags: [emails, sla, ledger]
+zone: business
+---
+
+# SLA Open Items
+
+Last computed: 2026-04-23 09:00 UTC
+Open: 2 | Breached: 2 (fast: 0, normal: 2, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|
+| normal | hr | Anna Candidate <anna@gmail.com> | hr@emvn.co | "Re: [EMVN] Final Interview Invitation" | msg_yn | 2026-04-21 06:41 | 2026-04-23 06:41 | ~12h | 🟠 breached | team-sla-at-risk |
+| normal | business | Hetzner <billing@hetzner.com> | business@emvn.co | "Credit card charge failed" | msg_ht | 2026-04-20 10:00 | 2026-04-22 10:00 | ~28h | 🟠 breached | team-sla-at-risk |
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|
+| normal | hr | Bot <noreply@info.airwallex.com> | business@emvn.co | "Action required: verify account" | msg_aw | 2026-04-22 14:00 | 2026-04-30 14:00 | ~5d | ⏳ open | awareness |
+| normal | business | Legit External <ext@real.com> | business@emvn.co | "Re: Quarterly numbers" | msg_ok | 2026-04-22 14:00 | 2026-04-30 14:00 | ~5d | ⏳ open | team-sla-at-risk |
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+`;
+    writeFileSync(ledgerPath, violatorLedger);
+    writeFileSync(threadsPath, EMPTY_THREADS);
+    const code = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+    });
+    expect(code).toBe(0);
+    const updated = readFileSync(ledgerPath, "utf-8");
+    // 3 violators dropped from the Breached/Open tables.
+    const breachedSection = updated.split("## Open (within SLA)")[0]!;
+    const openSection = updated.split("## Open (within SLA)")[1]!.split("## Resolved")[0]!;
+    expect(breachedSection).not.toContain("msg_yn");
+    expect(breachedSection).not.toContain("msg_ht");
+    expect(openSection).not.toContain("msg_aw");
+    // Legitimate row survives.
+    expect(openSection).toContain("msg_ok");
+    // Audit comment present.
+    expect(updated).toContain("SLA rule-sweep drop log");
+    expect(updated).toContain("msg_yn");
+    expect(updated).toContain("msg_ht");
+    expect(updated).toContain("msg_aw");
+    expect(updated).toContain("invitation subject");
+    expect(updated).toContain("billing-known");
+    expect(updated).toContain("automation-sender");
+  });
 });

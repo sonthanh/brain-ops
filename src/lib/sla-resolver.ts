@@ -418,12 +418,32 @@ const AUTO_REPLY_VALUES = new Set(["auto-replied", "auto-generated"]);
  * `"auto-notified"` as human-sent (per spec). Unknown values are logged by the
  * caller — we return false here to be liberal (prefer re-open over stuck
  * breach; the ledger is cheap to re-resolve).
+ *
+ * Used on the re-open path (external sender with auto-submitted → don't re-open).
  */
 export function isAutoReply(autoSubmitted: string | null): boolean {
   if (autoSubmitted === null) return false;
   const v = autoSubmitted.toLowerCase().trim();
   if (v === "" || v === "no" || v === "auto-notified") return false;
   return AUTO_REPLY_VALUES.has(v);
+}
+
+/**
+ * Strict variant: only `auto-replied` (RFC 3834 "automated reply" — vacation
+ * responder, OOO) counts as an auto-reply. `auto-generated` is NOT treated as
+ * auto when checked against a team/me sender — it is commonly applied by
+ * mailing-list distribution systems (e.g. Google Groups "via X") to legitimate
+ * human replies forwarded through the group alias. See 2026-04-23 Emad
+ * diagnostic: team replied from `network@musicmaster.io` with
+ * `Auto-Submitted: auto-generated`; the reply was genuinely human.
+ *
+ * Used on guard #4 where the candidate sender is already known to be team/me
+ * (guard #2 eliminated externals). Relaxing auto-generated here is safe
+ * because a team-domain vacation responder would still set `auto-replied`.
+ */
+export function isStrictAutoReply(autoSubmitted: string | null): boolean {
+  if (autoSubmitted === null) return false;
+  return autoSubmitted.toLowerCase().trim() === "auto-replied";
 }
 
 function parseEmailDateMs(dateStr: string): number {
@@ -565,8 +585,13 @@ function evaluateGuards(
       continue;
     }
 
-    // Guard #4: reply does NOT carry Auto-Submitted=auto-replied|auto-generated
-    if (isAutoReply(msg.auto_submitted)) {
+    // Guard #4: reply does NOT carry Auto-Submitted=auto-replied.
+    // Uses the STRICT check: only `auto-replied` (vacation responder / OOO)
+    // disqualifies. `auto-generated` from a team/me sender is usually a
+    // mailing-list distribution tag (Google Groups "via X") on a legitimate
+    // human reply — see 2026-04-23 Emad case. Loose `isAutoReply` would block
+    // those; we want them to resolve.
+    if (isStrictAutoReply(msg.auto_submitted)) {
       lastFailure = {
         messageId: row.messageId,
         guardNumber: 4,
@@ -843,6 +868,140 @@ function recomputeRowStatus(row: SlaRow, nowMs: number): SlaRow {
   };
   next.overdueOrRemaining = formatOverdueOrRemaining(next, breachMs, nowMs);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Rule sweep — deterministic invariants over ledger rows
+// ---------------------------------------------------------------------------
+//
+// Ported from .github/workflows/gmail-triage.yml Python validator step.
+// Source of truth for the patterns:
+//   - business/intelligence/gmail-rules.md § "SLA false-positive filters"
+//   - commands/gmail-triage.md § "CRITICAL — Noise Patterns"
+//
+// KEEP IN SYNC with gmail-triage.yml AUTOMATION_LP / BILLING_KNOWN. The Python
+// version covers classifier JSON output; this TS version covers ledger rows
+// that were classified days ago (before the current rules existed) and never
+// re-classified. Without this sweep, stale rows haunt the breach count.
+
+/** Automation-sender localpart — transactional notification bots. */
+export const AUTOMATION_LP =
+  /^(noreply|no-reply|no_reply|donotreply|do-not-reply|do_not_reply|notifications?|alerts?|auto|automated|mailer-daemon|postmaster|system|bounce)@/i;
+
+/** Known-vendor billing/invoice/statement localparts — team consults the vendor dashboard, not the email thread. */
+export const BILLING_KNOWN =
+  /^(billing|invoice|receipts?|statements?|accounts?)@(hetzner|stripe|airwallex|wise|anthropic|openai|github|aws|gcp|cloudflare|vercel|pandadoc|fitbit|e\.fitbit|interactivebrokers|pingpongx)\./i;
+
+/**
+ * Interview invitation / calendar invite subject patterns. User confirmed
+ * 2026-04-23: HR interview invitations + candidate responses to those invites
+ * are awareness (accept/decline is a 1-click calendar action, not an email
+ * reply obligation). A thread genuinely needing reply will carry a question
+ * — not a bare "Invitation:" or an "Interview Invitation" subject.
+ *
+ * Conservative: catches `*Interview Invitation*` (HR pattern) and subjects
+ * starting with `Invitation:` or `Re: Invitation:` (classic calendar invites).
+ * Does NOT catch "Invitation to invest…" or similar business invitations —
+ * those go through the classifier's normal path.
+ */
+export const INVITATION_SUBJECT =
+  /\bInterview\s+Invitation\b|^"?\s*(Re:\s+)?Invitation:/i;
+
+export interface ValidationDrop {
+  row: SlaRow;
+  reasons: string[];
+}
+
+export interface ValidationResult {
+  ledger: SlaLedger;
+  drops: ValidationDrop[];
+}
+
+/**
+ * Sweep the ledger's Breached + Open sections for rows that violate the
+ * deterministic invariants. Returns a ledger with violators removed and the
+ * list of drops for audit logging.
+ *
+ * Invariants (any one match → drop from Breached/Open):
+ *   1. `user_category=awareness` — awareness carries no reply obligation
+ *      (taxonomy A×A / A×N from ai-brain#100 Phase 2). Never belongs in the
+ *      active ledger.
+ *   2. From-address localpart matches AUTOMATION_LP — transactional bots
+ *      (noreply@…, notifications@…, etc.).
+ *   3. From-address localpart matches BILLING_KNOWN — vendor billing
+ *      notifications; team uses the vendor dashboard, not email replies.
+ *   4. Subject matches INVITATION_SUBJECT — HR / calendar invitations.
+ *
+ * Caller wires the output into runRefresh BEFORE resolveSlaLedger so the
+ * sweep's effects apply first, then resolution runs on the reduced set.
+ */
+export function validateSlaLedger(ledger: SlaLedger): ValidationResult {
+  const drops: ValidationDrop[] = [];
+
+  function checkRow(row: SlaRow): string[] {
+    const reasons: string[] = [];
+    const addr = extractAddress(row.from);
+    if (row.category === "awareness") {
+      reasons.push("category=awareness in active ledger");
+    }
+    if (addr && AUTOMATION_LP.test(addr)) {
+      reasons.push(`automation-sender localpart (${addr})`);
+    }
+    if (addr && BILLING_KNOWN.test(addr)) {
+      reasons.push(`billing-known localpart (${addr})`);
+    }
+    if (INVITATION_SUBJECT.test(row.subject)) {
+      reasons.push("invitation subject — awareness per taxonomy");
+    }
+    return reasons;
+  }
+
+  function filterAndCollect(rows: SlaRow[]): SlaRow[] {
+    const kept: SlaRow[] = [];
+    for (const row of rows) {
+      const reasons = checkRow(row);
+      if (reasons.length > 0) {
+        drops.push({ row, reasons });
+      } else {
+        kept.push(row);
+      }
+    }
+    return kept;
+  }
+
+  const keepBreached = filterAndCollect(ledger.breached);
+  const keepOpen = filterAndCollect(ledger.open);
+
+  return {
+    ledger: { ...ledger, breached: keepBreached, open: keepOpen },
+    drops,
+  };
+}
+
+/**
+ * Format a sweep-drop comment block for the ledger's trailing comment area.
+ * Parallels `formatGuardFailureComment` — one line per drop, naming the
+ * messageId + rule violations + subject prefix for quick audit.
+ */
+export function formatSweepDropComment(
+  drops: ValidationDrop[],
+  now: Date,
+): string {
+  if (drops.length === 0) return "";
+  const stamp = formatUtcMinuteWithSuffix(now);
+  const lines: string[] = [
+    "",
+    `<!-- SLA rule-sweep drop log — ${stamp} (${drops.length} row(s) auto-dropped for rule violation):`,
+  ];
+  for (const d of drops) {
+    const subj = d.row.subject.slice(0, 70);
+    lines.push(
+      `  - ${d.row.messageId} — ${subj} — ${d.reasons.join("; ")}`,
+    );
+  }
+  lines.push("-->");
+  lines.push("");
+  return lines.join("\n");
 }
 
 /**

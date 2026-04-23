@@ -7,10 +7,13 @@ import {
   classifySender,
   extractAddress,
   formatGuardFailureComment,
+  formatSweepDropComment,
   isAutoReply,
+  isStrictAutoReply,
   parseSlaLedger,
   resolveSlaLedger,
   serializeSlaLedger,
+  validateSlaLedger,
   type SlaLedger,
   type SlaRow,
   type ResolvedRow,
@@ -148,6 +151,24 @@ describe("isAutoReply", () => {
   });
 });
 
+describe("isStrictAutoReply", () => {
+  test.each<[string | null, boolean]>([
+    [null, false],
+    ["", false],
+    ["no", false],
+    ["auto-notified", false],
+    ["auto-replied", true],
+    // auto-generated is NOT strict auto-reply — commonly a mailing-list tag on
+    // legitimate human replies. See 2026-04-23 Emad diagnostic.
+    ["auto-generated", false],
+    ["Auto-Replied", true],
+    ["  auto-replied  ", true],
+    ["unknown-value", false],
+  ])("Auto-Submitted=%p → isStrictAutoReply=%p", (input, expected) => {
+    expect(isStrictAutoReply(input)).toBe(expected);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // resolveSlaLedger — 4-guard rule
 // ---------------------------------------------------------------------------
@@ -224,18 +245,26 @@ describe("resolveSlaLedger — 4-guard rule", () => {
     expect(result.guardFailures[0]!.rawReason).toContain("auto-replied");
   });
 
-  test("guard #4 fail: Auto-Submitted=auto-generated → still breached", () => {
+  test("guard #4 pass: team sender + Auto-Submitted=auto-generated resolves (mailing-list distribution)", () => {
+    // Production scenario 2026-04-23 Emad Yaghoubi (19da0bbfa059d5c2):
+    // team replied from network@musicmaster.io (a Google-Groups-style alias
+    // that tags outbound messages Auto-Submitted: auto-generated). The reply
+    // is a genuine human reply — only `auto-replied` (vacation responder)
+    // should block resolution from a team sender.
     const ledger = { ...emptyLedger(), breached: [breachedRow()] };
     const result = resolveSlaLedger({
       ledger,
       threads: [thread(MESSAGE_ID, [
         { from: EXTERNAL_ADDR, to: "business@emvn.co", date: "2026-04-18T13:15:00Z" },
-        { from: "thanh@emvn.co", to: EXTERNAL_ADDR, date: "2026-04-22T12:00:00Z", auto_submitted: "auto-generated" },
+        { from: "network@musicmaster.io", to: EXTERNAL_ADDR, date: "2026-04-22T12:00:00Z", auto_submitted: "auto-generated" },
       ])],
       identities: IDENTITIES,
       now: NOW,
     });
-    expect(result.guardFailures[0]!.guardNumber).toBe(4);
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+    expect(result.ledger.breached).toEqual([]);
+    expect(result.ledger.resolved).toHaveLength(1);
+    expect(result.ledger.resolved[0]!.resolvedBy).toContain("musicmaster.io");
   });
 
   test.each<[string | null, string]>([
@@ -698,5 +727,139 @@ describe("formatGuardFailureComment", () => {
     expect(out).toContain("guard #4");
     expect(out).toContain("auto-replied");
     expect(out).toContain("candidate reply 2026-04-22T08:00:00Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateSlaLedger — deterministic rule sweep
+// ---------------------------------------------------------------------------
+
+describe("validateSlaLedger", () => {
+  test("empty ledger: no drops, unchanged", () => {
+    const ledger = emptyLedger();
+    const result = validateSlaLedger(ledger);
+    expect(result.drops).toEqual([]);
+    expect(result.ledger.breached).toEqual([]);
+    expect(result.ledger.open).toEqual([]);
+  });
+
+  test("drops awareness rows from Breached", () => {
+    const row = breachedRow({ category: "awareness" });
+    const result = validateSlaLedger({ ...emptyLedger(), breached: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons).toContain("category=awareness in active ledger");
+    expect(result.ledger.breached).toEqual([]);
+  });
+
+  test("drops awareness rows from Open", () => {
+    const row = openRow({ category: "awareness" });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.ledger.open).toEqual([]);
+  });
+
+  test.each<[string, string]>([
+    ["noreply@mail.anthropic.com", "noreply"],
+    ["no-reply@info.airwallex.com", "no-reply"],
+    ["donotreply@interactivebrokers.com", "donotreply"],
+    ["notifications@stripe.com", "notifications"],
+    ["alerts@github.com", "alerts"],
+    ["mailer-daemon@gmail.com", "mailer-daemon"],
+  ])("drops automation-sender localpart from=%p", (addr, _lp) => {
+    const row = openRow({ from: `Bot <${addr}>` });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("automation-sender"))).toBe(true);
+    expect(result.ledger.open).toEqual([]);
+  });
+
+  test.each<string>([
+    "billing@hetzner.com",
+    "billing@stripe.com",
+    "invoice@wise.com",
+    "receipts@pandadoc.net",
+    "accounts@pingpongx.com",
+    "billing@e.fitbit.com",
+  ])("drops billing-known localpart from=%p", (addr) => {
+    const row = openRow({ from: `Vendor Billing <${addr}>` });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("billing-known"))).toBe(true);
+  });
+
+  test("drops invitation-subject rows — HR Interview Invitation (Yen Nhi case)", () => {
+    const row = breachedRow({
+      subject: '"Re: [EMVN] YouTube Channel Optimizer - Final Interview Invitation"',
+      category: "team-sla-at-risk",
+    });
+    const result = validateSlaLedger({ ...emptyLedger(), breached: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons).toContain("invitation subject — awareness per taxonomy");
+  });
+
+  test("drops invitation-subject rows — bare 'Invitation:' prefix (calendar invite)", () => {
+    const row = openRow({ subject: '"Invitation: Team Standup Apr 25"' });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+  });
+
+  test("keeps non-invitation business subjects with the word 'Invitation' in them", () => {
+    // "Invitation to invest in Foo Corp" is business, not HR — no colon, no
+    // "Interview Invitation" — keep.
+    const row = openRow({ subject: '"Re: Invitation to invest in Foo Corp"' });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toEqual([]);
+    expect(result.ledger.open).toHaveLength(1);
+  });
+
+  test("keeps team-sla-at-risk from normal senders", () => {
+    const row = openRow({
+      from: "External Person <external@example.com>",
+      subject: '"Re: Clarification on Payments"',
+      category: "team-sla-at-risk",
+    });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toEqual([]);
+    expect(result.ledger.open).toHaveLength(1);
+  });
+
+  test("collects multiple reasons when a row violates several invariants", () => {
+    // Awareness + automation + billing — all three fire.
+    const row = openRow({
+      from: "Hetzner Billing <billing@hetzner.com>",
+      category: "awareness",
+    });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatSweepDropComment
+// ---------------------------------------------------------------------------
+
+describe("formatSweepDropComment", () => {
+  test("empty drop list returns empty string", () => {
+    expect(formatSweepDropComment([], NOW)).toBe("");
+  });
+
+  test("formats one-line-per-drop with messageId + subject + reasons", () => {
+    const out = formatSweepDropComment(
+      [
+        {
+          row: breachedRow({
+            messageId: "msg_yn",
+            subject: '"Re: [EMVN] - Final Interview Invitation"',
+          }),
+          reasons: ["invitation subject — awareness per taxonomy"],
+        },
+      ],
+      NOW,
+    );
+    expect(out).toContain("SLA rule-sweep drop log");
+    expect(out).toContain("msg_yn");
+    expect(out).toContain("Interview Invitation");
+    expect(out).toContain("awareness per taxonomy");
   });
 });

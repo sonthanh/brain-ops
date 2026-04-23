@@ -3,9 +3,11 @@ import { parseIdentities } from "./lib/identities.ts";
 import { fetchSlaThreads } from "./gmail-fetch.ts";
 import {
   formatGuardFailureComment,
+  formatSweepDropComment,
   parseSlaLedger,
   resolveSlaLedger,
   serializeSlaLedger,
+  validateSlaLedger,
 } from "./lib/sla-resolver.ts";
 import type { SlaThread } from "./lib/types.ts";
 
@@ -69,16 +71,30 @@ export async function runRefresh(args: Args): Promise<number> {
     return 0;
   }
   const original = readFileSync(args.ledgerPath, "utf-8");
-  const ledger = parseSlaLedger(original);
+  const parsed = parseSlaLedger(original);
+
+  // Rule-sweep pass (deterministic invariants — no threads needed). Drops
+  // awareness / automation / billing / invitation rows that shouldn't be in
+  // the active ledger regardless of thread state. Runs BEFORE resolveSlaLedger
+  // so the resolver sees a clean row set.
+  const validation = validateSlaLedger(parsed);
+
   const threads = await loadThreads(args);
   const identities = parseIdentities(args.gmailRulesPath);
   const now = new Date();
 
-  const result = resolveSlaLedger({ ledger, threads, identities, now });
+  const result = resolveSlaLedger({
+    ledger: validation.ledger,
+    threads,
+    identities,
+    now,
+  });
   const guardComment = formatGuardFailureComment(result.guardFailures, now);
+  const sweepComment = formatSweepDropComment(validation.drops, now);
   const updated = {
     ...result.ledger,
-    afterResolvedBlock: result.ledger.afterResolvedBlock + guardComment,
+    afterResolvedBlock:
+      result.ledger.afterResolvedBlock + guardComment + sweepComment,
   };
   const serialized = serializeSlaLedger(updated);
 
@@ -89,16 +105,21 @@ export async function runRefresh(args: Args): Promise<number> {
   if (args.dryRun) {
     console.log("[sla-refresh] --dry-run: would write ledger");
     console.log(
-      `[sla-refresh] resolved=${result.resolvedIds.length} reopened=${result.reopenedIds.length} guardFailures=${result.guardFailures.length}`,
+      `[sla-refresh] resolved=${result.resolvedIds.length} reopened=${result.reopenedIds.length} sweepDropped=${validation.drops.length} guardFailures=${result.guardFailures.length}`,
     );
     return 0;
   }
   writeFileSync(args.ledgerPath, serialized, "utf-8");
   console.log(
-    `[sla-refresh] updated ${args.ledgerPath}: resolved=${result.resolvedIds.length} reopened=${result.reopenedIds.length} guardFailures=${result.guardFailures.length}`,
+    `[sla-refresh] updated ${args.ledgerPath}: resolved=${result.resolvedIds.length} reopened=${result.reopenedIds.length} sweepDropped=${validation.drops.length} guardFailures=${result.guardFailures.length}`,
   );
   if (result.resolvedIds.length > 0) console.log(`  resolved: ${result.resolvedIds.join(", ")}`);
   if (result.reopenedIds.length > 0) console.log(`  reopened: ${result.reopenedIds.join(", ")}`);
+  if (validation.drops.length > 0) {
+    console.log(
+      `  sweep-dropped: ${validation.drops.map((d) => d.row.messageId).join(", ")}`,
+    );
+  }
   return 0;
 }
 
