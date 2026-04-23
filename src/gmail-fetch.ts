@@ -74,7 +74,10 @@ export async function fetchUnreadEmails(options: {
 }
 
 /**
- * Parse sla-open.md and extract Message IDs from ## Breached and ## Open tables.
+ * Parse sla-open.md and extract Message IDs from the `## Breached` + `## Open
+ * (within SLA)` tables only. Skip the `## Resolved` table — its column layout
+ * differs (no `To` column), so column-5 indexing would pick up the `Received`
+ * date and pass it to Gmail as a message ID.
  */
 function parseLedgerMessageIds(ledgerPath: string): string[] {
   let content: string;
@@ -85,11 +88,15 @@ function parseLedgerMessageIds(ledgerPath: string): string[] {
   }
 
   const ids: string[] = [];
-  // Match table rows: | tier | owner | from | to | subject | MESSAGE_ID | ...
-  // Message ID is column 6 (0-indexed: 5) in both Breached and Open tables
+  let activeSection: "breached" | "open" | null = null;
   for (const line of content.split("\n")) {
+    if (/^##\s+Breached\s*$/.test(line)) { activeSection = "breached"; continue; }
+    if (/^##\s+Open\s*\(within SLA\)\s*$/.test(line)) { activeSection = "open"; continue; }
+    if (/^##\s+/.test(line)) { activeSection = null; continue; }
+    if (activeSection === null) continue;
     if (!line.startsWith("|") || line.startsWith("|--") || line.startsWith("| Tier")) continue;
     const cols = line.split("|").map((c) => c.trim()).filter(Boolean);
+    // Breached + Open tables carry 11 populated columns; Message ID is col 5.
     if (cols.length >= 6 && cols[5] && !cols[5].startsWith("Message")) {
       ids.push(cols[5]);
     }
