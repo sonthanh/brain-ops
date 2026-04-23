@@ -126,7 +126,14 @@ export interface SlaThreadMessage {
   from: string;
   to: string;
   date: string;
-  auto_submitted: boolean;
+  /**
+   * Raw value of the `Auto-Submitted` header (null when header absent or empty).
+   * Guard #4 in the SLA resolver interprets the string directly — storing a boolean
+   * loses information because `"no"` and `"auto-notified"` both mean human-sent but
+   * are non-empty strings, while `"auto-replied"` and `"auto-generated"` are the
+   * only values that disqualify a reply. See commands/gmail-triage.md §8 step 7d.
+   */
+  auto_submitted: string | null;
 }
 
 export interface SlaThread {

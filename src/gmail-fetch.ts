@@ -143,11 +143,12 @@ export async function fetchSlaThreads(options: {
         const header = (name: string): string =>
           headers.find((h) => h.name === name)?.value || "";
 
+        const autoSubmittedRaw = header("Auto-Submitted");
         threadMessages.push({
           from: header("From"),
           to: header("To"),
           date: header("Date"),
-          auto_submitted: header("Auto-Submitted") !== "",
+          auto_submitted: autoSubmittedRaw === "" ? null : autoSubmittedRaw,
         });
       }
 

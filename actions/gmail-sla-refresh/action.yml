@@ -1,0 +1,60 @@
+name: Gmail SLA Refresh
+description: >-
+  Deterministic refresh of the SLA ledger. Applies the 4-guard resolution rule,
+  follow-up re-open detection, breach-status recompute against the current
+  clock, and Resolved-row trimming. No LLM — all logic lives in
+  brain-ops/src/lib/sla-resolver.ts.
+
+inputs:
+  ledger-path:
+    description: Path to sla-open.md in the checked-out vault repo
+    required: true
+  gmail-rules-path:
+    description: >-
+      Path to gmail-rules.md in the checked-out vault repo. Used to parse
+      send-as identities + team domains for guard #2 sender classification.
+    required: true
+  credentials-path:
+    description: >-
+      Path to Gmail OAuth credentials JSON. If provided and threads-json-path
+      is empty, the action fetches thread data live from the Gmail API.
+    required: false
+    default: ""
+  threads-json-path:
+    description: >-
+      Path to a pre-fetched SLA threads JSON array (see gmail-fetch action
+      output). When set, the refresh reuses this file and skips the live Gmail
+      API call — used by the gmail-triage workflow's post-classifier step.
+    required: false
+    default: ""
+  dry-run:
+    description: Parse + resolve but do not write the ledger
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Refresh SLA ledger
+      shell: bash
+      env:
+        LEDGER_PATH: ${{ inputs.ledger-path }}
+        GMAIL_RULES_PATH: ${{ inputs.gmail-rules-path }}
+        CREDENTIALS_PATH: ${{ inputs.credentials-path }}
+        THREADS_JSON_PATH: ${{ inputs.threads-json-path }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        FLAGS=( "--ledger" "$LEDGER_PATH" "--gmail-rules" "$GMAIL_RULES_PATH" )
+        if [ -n "$THREADS_JSON_PATH" ] && [ -f "$THREADS_JSON_PATH" ]; then
+          FLAGS+=( "--threads" "$THREADS_JSON_PATH" )
+        elif [ -n "$CREDENTIALS_PATH" ]; then
+          FLAGS+=( "--credentials" "$CREDENTIALS_PATH" )
+        fi
+        if [ "$DRY_RUN" = "true" ]; then FLAGS+=( "--dry-run" ); fi
+        node "${ACTION_PATH}/dist/sla-refresh.mjs" "${FLAGS[@]}"

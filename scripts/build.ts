@@ -12,6 +12,7 @@ const actions = [
     entry: "src/gmail-lifecycle-check.ts",
     out: "actions/gmail-lifecycle-check/dist/gmail-lifecycle-check.mjs",
   },
+  { entry: "src/sla-refresh.ts", out: "actions/gmail-sla-refresh/dist/sla-refresh.mjs" },
 ];
 
 for (const { entry, out } of actions) {
