@@ -44,6 +44,8 @@ function openRow(overrides: Partial<SlaRow> = {}): SlaRow {
     overdueOrRemaining: "~1.0h",
     statusCell: "⏳ open",
     category: "team-sla-at-risk",
+    replyOwed: "unknown",
+    replyReason: "",
     ...overrides,
   };
 }
@@ -67,7 +69,10 @@ function emptyLedger(): SlaLedger {
     breached: [],
     betweenBreachedAndOpenBlock: "\n## Open (within SLA)\n",
     open: [],
-    betweenOpenAndResolvedBlock: "\n## Resolved (last 7 days, audit trail)\n",
+    betweenOpenAndSuppressedBlock: "\n## Auto-suppressed\n",
+    suppressed: [],
+    suppressedSectionPresent: true,
+    betweenSuppressedAndResolvedBlock: "\n## Resolved (last 7 days, audit trail)\n",
     resolved: [],
     afterResolvedBlock: "",
   };
@@ -861,5 +866,209 @@ describe("formatSweepDropComment", () => {
     expect(out).toContain("msg_yn");
     expect(out).toContain("Interview Invitation");
     expect(out).toContain("awareness per taxonomy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reply-Owed semantic-intent routing (ai-brain#112)
+// ---------------------------------------------------------------------------
+
+describe("resolveSlaLedger — Reply Owed routing", () => {
+  test("breached row with replyOwed=false routes to suppressed (no breach count)", () => {
+    const row = breachedRow({
+      replyOwed: "false",
+      replyReason: "bulk-brief-not-selected: outbound-initiated brief",
+    });
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), breached: [row] },
+      threads: [],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.breached).toEqual([]);
+    expect(result.ledger.suppressed).toHaveLength(1);
+    expect(result.ledger.suppressed[0]!.statusCell).toBe("🔇 suppressed");
+    expect(result.ledger.suppressed[0]!.replyOwed).toBe("false");
+    expect(result.ledger.headerCountsLine).toBe(
+      "Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)",
+    );
+  });
+
+  test("open row with replyOwed=false routes to suppressed", () => {
+    const row = openRow({
+      replyOwed: "false",
+      replyReason: "confirmation: client confirmed receipt",
+    });
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), open: [row] },
+      threads: [],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.open).toEqual([]);
+    expect(result.ledger.suppressed).toHaveLength(1);
+  });
+
+  test("replyOwed=true and replyOwed=unknown both stay active (unknown is safe-fallback to true)", () => {
+    const trueRow = breachedRow({ messageId: "msg_true", replyOwed: "true" });
+    const unknownRow = breachedRow({ messageId: "msg_unk", replyOwed: "unknown" });
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), breached: [trueRow, unknownRow] },
+      threads: [],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.suppressed).toEqual([]);
+    expect(result.ledger.breached).toHaveLength(2);
+  });
+
+  test("suppressed row that flips back to replyOwed=true gets promoted to active", () => {
+    const wasSuppressed: SlaRow = {
+      ...openRow({
+        replyOwed: "true",
+        replyReason: "pending-ask: partner sent fresh question",
+        statusCell: "🔇 suppressed",
+      }),
+      breachAtUtc: "2026-04-22 13:15", // before NOW → should land in breached
+    };
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), suppressed: [wasSuppressed] },
+      threads: [],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.suppressed).toEqual([]);
+    expect(result.ledger.breached).toHaveLength(1);
+    expect(result.ledger.breached[0]!.statusCell).toBe("🟠 breached");
+  });
+
+  test("suppressed row stays put when still replyOwed=false (age cell refreshed)", () => {
+    const stillSuppressed = openRow({
+      replyOwed: "false",
+      replyReason: "fyi: informational only",
+      receivedAtUtc: "2026-04-22 09:00",
+    });
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), suppressed: [stillSuppressed] },
+      threads: [],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.suppressed).toHaveLength(1);
+    // Age = NOW (2026-04-23 10:00) - received (2026-04-22 09:00) = ~25h → ~1.0 bd format.
+    expect(result.ledger.suppressed[0]!.overdueOrRemaining).toMatch(/^~/);
+  });
+
+  test("suppressed routing skips guard evaluation (no guard failure logged)", () => {
+    const row = breachedRow({ replyOwed: "false" });
+    const result = resolveSlaLedger({
+      ledger: { ...emptyLedger(), breached: [row] },
+      threads: [thread(MESSAGE_ID, [
+        { from: EXTERNAL_ADDR, to: "business@emvn.co", date: "2026-04-18T13:15:00Z" },
+        // No reply — would have been guard #1 fail under normal path.
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.guardFailures).toEqual([]);
+    expect(result.ledger.suppressed).toHaveLength(1);
+  });
+
+  test("self-healing serializer emits ## Auto-suppressed even when source ledger lacked it", () => {
+    const legacyLedger: SlaLedger = {
+      ...emptyLedger(),
+      // Mimic the parsed shape of a pre-#112 ledger: no suppressed section.
+      betweenOpenAndSuppressedBlock: "",
+      betweenSuppressedAndResolvedBlock: "\n## Resolved (last 7 days, audit trail)\n",
+      suppressedSectionPresent: false,
+    };
+    const out = serializeSlaLedger(legacyLedger);
+    expect(out).toContain("## Auto-suppressed");
+    expect(out).toContain("Reply Owed");
+    expect(out).toContain("## Resolved (last 7 days, audit trail)");
+  });
+});
+
+describe("parseSlaLedger — schema migration", () => {
+  test("parses 13-cell row with Reply Owed + Reply Reason", () => {
+    const ledger = `---
+title: SLA Open Items
+created: 2026-04-15
+updated: 2026-04-25 10:00 UTC
+tags: [emails, sla, ledger]
+zone: business
+---
+
+# SLA Open Items
+
+Last computed: 2026-04-25 10:00 UTC
+Open: 0 | Breached: 1 (fast: 0, normal: 1, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category | Reply Owed | Reply Reason |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|------------|--------------|
+| normal | business | External <ext@x.com> | business@emvn.co | "Q" | msg_b1 | 2026-04-18 13:15 | 2026-04-22 13:15 | ~1.0 bd | 🟠 breached | team-sla-at-risk | true | pending-ask: question awaiting our reply |
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category | Reply Owed | Reply Reason |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|------------|--------------|
+
+## Auto-suppressed
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Age | Status | Category | Reply Owed | Reply Reason |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----|--------|----------|------------|--------------|
+| fast | license | Camila <c@feltmusic.com> | license@emvn.co | "Re: bulk brief" | msg_s1 | 2026-04-24 10:45 | 2026-04-24 14:45 | ~28.0h | 🔇 suppressed | team-sla-at-risk | false | bulk-brief-not-selected: outbound brief reply |
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+`;
+    const parsed = parseSlaLedger(ledger);
+    expect(parsed.breached[0]!.replyOwed).toBe("true");
+    expect(parsed.breached[0]!.replyReason).toContain("pending-ask");
+    expect(parsed.suppressedSectionPresent).toBe(true);
+    expect(parsed.suppressed).toHaveLength(1);
+    expect(parsed.suppressed[0]!.replyOwed).toBe("false");
+    expect(parsed.suppressed[0]!.messageId).toBe("msg_s1");
+  });
+
+  test("legacy 11-cell row parses with replyOwed=unknown + replyReason=''", () => {
+    const legacy = `---
+title: SLA Open Items
+---
+
+# SLA Open Items
+
+Last computed: 2026-04-25 10:00 UTC
+Open: 0 | Breached: 1 (fast: 0, normal: 1, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|
+| normal | business | External <ext@x.com> | business@emvn.co | "Q" | msg_b1 | 2026-04-18 13:15 | 2026-04-22 13:15 | ~1.0 bd | 🟠 breached | team-sla-at-risk |
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+`;
+    const parsed = parseSlaLedger(legacy);
+    expect(parsed.breached).toHaveLength(1);
+    expect(parsed.breached[0]!.replyOwed).toBe("unknown");
+    expect(parsed.breached[0]!.replyReason).toBe("");
+    expect(parsed.suppressedSectionPresent).toBe(false);
+    expect(parsed.suppressed).toEqual([]);
+  });
+
+  test("serializer escapes literal `|` inside subject as full-width `｜`", () => {
+    const row = openRow({
+      subject: "Re: [Urgent - EMVN] Sync Opportunity | Disney+ Trailer",
+    });
+    const ledger: SlaLedger = { ...emptyLedger(), open: [row] };
+    const out = serializeSlaLedger(ledger);
+    expect(out).toContain("Sync Opportunity ｜ Disney+ Trailer");
+    expect(out).not.toMatch(/Sync Opportunity \| Disney/);
   });
 });

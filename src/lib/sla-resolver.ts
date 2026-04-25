@@ -1,5 +1,5 @@
 import type { Identities } from "./identities.ts";
-import type { SlaThread } from "./types.ts";
+import type { ReplyOwed, SlaThread } from "./types.ts";
 
 export type SlaTier = "fast" | "normal" | "slow";
 export type SlaStatus = "breached" | "open";
@@ -16,6 +16,20 @@ export interface SlaRow {
   overdueOrRemaining: string;
   statusCell: string;
   category: string;
+  /**
+   * Semantic-intent gate (ai-brain#112). When `"false"`, the row is routed to
+   * `## Auto-suppressed` instead of contributing to the breach count. Legacy
+   * rows written before the schema migration parse as `"unknown"`; the
+   * resolver treats `unknown` like `true` (safe fallback) until the
+   * classifier re-sweeps.
+   */
+  replyOwed: ReplyOwed;
+  /**
+   * Audit annotation: `<bucket>: <one-line reason>` from the classifier
+   * (e.g. `bulk-brief-not-selected: bulk reply to outbound brief`). Empty
+   * for legacy rows; never enumerated by the resolver, only round-tripped.
+   */
+  replyReason: string;
 }
 
 export interface ResolvedRow {
@@ -39,7 +53,26 @@ export interface SlaLedger {
   breached: SlaRow[];
   betweenBreachedAndOpenBlock: string;
   open: SlaRow[];
-  betweenOpenAndResolvedBlock: string;
+  /**
+   * Block between the Open table's last row and the `## Auto-suppressed`
+   * heading (or, when the section is absent on a legacy ledger, the
+   * `## Resolved` heading — see `suppressedSectionPresent`).
+   */
+  betweenOpenAndSuppressedBlock: string;
+  /**
+   * Rows whose semantic intent classifier judged `Reply Owed = false`.
+   * Routed here from Breached/Open so they don't pollute `/status` breach
+   * counts but the audit trail stays recoverable. Empty when the section is
+   * absent on a legacy ledger.
+   */
+  suppressed: SlaRow[];
+  /**
+   * Whether the ledger source actually carried a `## Auto-suppressed`
+   * heading. Legacy ledgers (pre-#112) do not — when false, the serializer
+   * still emits the section so the round-trip self-heals to the new schema.
+   */
+  suppressedSectionPresent: boolean;
+  betweenSuppressedAndResolvedBlock: string;
   resolved: ResolvedRow[];
   afterResolvedBlock: string;
 }
@@ -71,6 +104,7 @@ export interface ResolveResult {
 
 const BREACHED_HEADING_RE = /^##\s+Breached\s*$/;
 const OPEN_HEADING_RE = /^##\s+Open\s*\(within SLA\)\s*$/;
+const SUPPRESSED_HEADING_RE = /^##\s+Auto-suppressed(\s+\(.+\))?\s*$/;
 const RESOLVED_HEADING_RE = /^##\s+Resolved(\s+\(.+\))?\s*$/;
 const TABLE_ROW_RE = /^\|/;
 const TABLE_SEP_RE = /^\|\s*-+/;
@@ -95,9 +129,14 @@ function looksLikeHeaderRow(cells: string[]): boolean {
 }
 
 function parseRow(cells: string[]): SlaRow | null {
+  // Schema (ai-brain#112): 13-cell rows with `Reply Owed` + `Reply Reason`
+  // appended after `Category`. Legacy 11-cell rows are still accepted —
+  // they parse with `replyOwed="unknown"` + `replyReason=""` so existing
+  // ledgers self-heal on the next refresh round-trip.
   if (cells.length < 11) return null;
   const tier = cells[0] as SlaTier;
   if (tier !== "fast" && tier !== "normal" && tier !== "slow") return null;
+  const replyOwed = parseReplyOwed(cells[11]);
   return {
     tier,
     owner: cells[1] ?? "",
@@ -110,7 +149,16 @@ function parseRow(cells: string[]): SlaRow | null {
     overdueOrRemaining: cells[8] ?? "",
     statusCell: cells[9] ?? "",
     category: cells[10] ?? "",
+    replyOwed,
+    replyReason: cells[12] ?? "",
   };
+}
+
+function parseReplyOwed(raw: string | undefined): ReplyOwed {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "true" || v === "yes") return "true";
+  if (v === "false" || v === "no") return "false";
+  return "unknown";
 }
 
 function parseResolvedRow(cells: string[]): ResolvedRow | null {
@@ -255,9 +303,15 @@ export function parseSlaLedger(content: string): SlaLedger {
     if (row) open.push({ ...row, statusCell: row.statusCell || "⏳ open" });
   }
 
-  // betweenOpenAndResolvedBlock — up to ## Resolved
+  // Optional `## Auto-suppressed` section sits between Open and Resolved.
+  // Legacy ledgers (pre-#112) skip it; the serializer always emits one so
+  // the round-trip self-heals to the new schema.
+  let suppressedIdx = -1;
   let resolvedIdx = -1;
   for (let k = openTable.rowsEnd; k < lines.length; k++) {
+    if (suppressedIdx < 0 && SUPPRESSED_HEADING_RE.test(lines[k] ?? "")) {
+      suppressedIdx = k;
+    }
     if (RESOLVED_HEADING_RE.test(lines[k] ?? "")) {
       resolvedIdx = k;
       break;
@@ -266,9 +320,35 @@ export function parseSlaLedger(content: string): SlaLedger {
   if (resolvedIdx < 0) {
     throw new Error(`parseSlaLedger: missing "## Resolved" heading`);
   }
-  const betweenOpenAndResolvedBlock = lines
-    .slice(openTable.rowsEnd, resolvedIdx + 1)
-    .join("\n") + "\n";
+
+  let betweenOpenAndSuppressedBlock = "";
+  let suppressed: SlaRow[] = [];
+  let suppressedSectionPresent = suppressedIdx >= 0;
+  let betweenSuppressedAndResolvedBlock = "";
+
+  if (suppressedSectionPresent) {
+    betweenOpenAndSuppressedBlock = lines
+      .slice(openTable.rowsEnd, suppressedIdx + 1)
+      .join("\n") + "\n";
+    const suppressedTable = extractTable(lines, suppressedIdx + 1);
+    for (const r of suppressedTable.rows) {
+      const cells = splitRow(r);
+      if (looksLikeHeaderRow(cells) || TABLE_SEP_RE.test(r)) continue;
+      const row = parseRow(cells);
+      if (row) suppressed.push({ ...row, statusCell: row.statusCell || "🔇 suppressed" });
+    }
+    betweenSuppressedAndResolvedBlock = lines
+      .slice(suppressedTable.rowsEnd, resolvedIdx + 1)
+      .join("\n") + "\n";
+  } else {
+    // No suppressed section — synthesize empty separators so the serializer
+    // can splice the new section in without disturbing existing comment
+    // blocks between Open and Resolved.
+    betweenOpenAndSuppressedBlock = "";
+    betweenSuppressedAndResolvedBlock = lines
+      .slice(openTable.rowsEnd, resolvedIdx + 1)
+      .join("\n") + "\n";
+  }
 
   // Resolved table
   const resolvedTable = extractTable(lines, resolvedIdx + 1);
@@ -293,7 +373,10 @@ export function parseSlaLedger(content: string): SlaLedger {
     breached,
     betweenBreachedAndOpenBlock,
     open,
-    betweenOpenAndResolvedBlock,
+    betweenOpenAndSuppressedBlock,
+    suppressed,
+    suppressedSectionPresent,
+    betweenSuppressedAndResolvedBlock,
     resolved,
     afterResolvedBlock,
   };
@@ -304,17 +387,35 @@ export function parseSlaLedger(content: string): SlaLedger {
 // ---------------------------------------------------------------------------
 
 const BREACHED_HEADER =
-  "| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |";
+  "| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category | Reply Owed | Reply Reason |";
 const OPEN_HEADER =
-  "| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |";
+  "| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category | Reply Owed | Reply Reason |";
+const SUPPRESSED_HEADER =
+  "| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Age | Status | Category | Reply Owed | Reply Reason |";
 const ROW_SEP =
-  "|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|";
+  "|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|------------|--------------|";
 const ROW_SEP_OPEN =
-  "|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|";
+  "|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|------------|--------------|";
+const ROW_SEP_SUPPRESSED =
+  "|------|-------|------|----|---------|------------|----------------|-----------------|-----|--------|----------|------------|--------------|";
 const RESOLVED_HEADER =
   "| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |";
 const RESOLVED_SEP =
   "|------|-------|------|---------|------------|----------|----------------|-------------|";
+
+/**
+ * Subjects sometimes contain a literal `|` (e.g. the Disney+ bulk-brief
+ * threads). Markdown-table syntax has no escape, and `splitRow` would
+ * mis-count cells, scrambling every column to the right of subject. We
+ * substitute a Unicode full-width vertical bar (U+FF5C `｜`) on the way out
+ * so the row stays parseable. Round-trip is one-way (parser doesn't reverse
+ * the substitution) — once written, the cleaner glyph is the canonical
+ * stored form, mirroring how the rest of the gmail-triage pipeline already
+ * sanitises subjects on classification.
+ */
+function escapeSubjectPipe(s: string): string {
+  return s.replace(/\|/g, "｜");
+}
 
 function serializeRow(r: SlaRow): string {
   const cells = [
@@ -322,13 +423,15 @@ function serializeRow(r: SlaRow): string {
     r.owner,
     r.from,
     r.to,
-    r.subject,
+    escapeSubjectPipe(r.subject),
     r.messageId,
     r.receivedAtUtc,
     r.breachAtUtc,
     r.overdueOrRemaining,
     r.statusCell,
     r.category,
+    r.replyOwed,
+    r.replyReason,
   ];
   return `| ${cells.join(" | ")} |`;
 }
@@ -367,7 +470,23 @@ export function serializeSlaLedger(ledger: SlaLedger): string {
   parts.push(ROW_SEP_OPEN + "\n");
   for (const r of ledger.open) parts.push(serializeRow(r) + "\n");
 
-  parts.push(ledger.betweenOpenAndResolvedBlock);
+  // Always emit the `## Auto-suppressed` section, even when empty. Legacy
+  // ledgers parse with `suppressedSectionPresent=false`; the round-trip
+  // self-heals to the new schema by emitting the heading inline here, then
+  // splicing the prior `betweenOpenAndResolvedBlock` (now stored as
+  // `betweenSuppressedAndResolvedBlock`) AFTER the new section.
+  // When the source already had the section, the heading is the trailing
+  // line of `betweenOpenAndSuppressedBlock` — no synthetic heading needed.
+  if (ledger.suppressedSectionPresent) {
+    parts.push(ledger.betweenOpenAndSuppressedBlock);
+  } else {
+    parts.push("\n## Auto-suppressed\n");
+  }
+  parts.push(SUPPRESSED_HEADER + "\n");
+  parts.push(ROW_SEP_SUPPRESSED + "\n");
+  for (const r of ledger.suppressed) parts.push(serializeRow(r) + "\n");
+
+  parts.push(ledger.betweenSuppressedAndResolvedBlock);
   parts.push(RESOLVED_HEADER + "\n");
   parts.push(RESOLVED_SEP + "\n");
   for (const r of ledger.resolved) parts.push(serializeResolvedRow(r) + "\n");
@@ -501,6 +620,19 @@ function statusCellFor(tier: SlaTier, isBreached: boolean): string {
     case "slow":
       return "🟡 breached";
   }
+}
+
+/**
+ * Format the time-since-received for a row routed to `## Auto-suppressed`.
+ * Rows in this section have no breach concept (the classifier judged the
+ * thread semantically closed), so we render age, not overdue.
+ */
+function formatAge(receivedAtUtc: string, nowMs: number): string {
+  const recvMs = parseLedgerUtcMs(receivedAtUtc);
+  if (!Number.isFinite(recvMs)) return "";
+  const ageHours = Math.max(0, (nowMs - recvMs) / 3_600_000);
+  if (ageHours < 24) return `~${ageHours.toFixed(1)}h`;
+  return `~${(ageHours / 24).toFixed(1)} bd`;
 }
 
 interface GuardEvaluation {
@@ -742,6 +874,11 @@ export function resolveSlaLedger(opts: ResolveOptions): ResolveResult {
         overdueOrRemaining: "",
         statusCell: sc,
         category: "team-sla-at-risk",
+        // Re-opened rows have unknown intent until the next classifier sweep
+        // re-judges them. `unknown` defaults to behaving like `true` (safe
+        // fallback — the row stays in active until proven semantically closed).
+        replyOwed: "unknown",
+        replyReason: "",
       };
       synthetic.overdueOrRemaining = formatOverdueOrRemaining(
         synthetic,
@@ -754,10 +891,25 @@ export function resolveSlaLedger(opts: ResolveOptions): ResolveResult {
     }
   }
 
+  // --- Suppression routing pass (ai-brain#112). ---
+  // Any active row whose semantic-intent flag is `false` skips guard
+  // evaluation and lands in `## Auto-suppressed`. Rows still with
+  // `true`/`unknown` continue to resolution. We track the suppressed bucket
+  // separately so the breach count stays clean.
+  const suppressedFromActive: SlaRow[] = [];
+
   // --- Resolution pass on active rows (breached + open). ---
   function processActive(rows: SlaRow[]): SlaRow[] {
     const out: SlaRow[] = [];
     for (const row of rows) {
+      if (row.replyOwed === "false") {
+        suppressedFromActive.push({
+          ...row,
+          statusCell: "🔇 suppressed",
+          overdueOrRemaining: formatAge(row.receivedAtUtc, nowMs),
+        });
+        continue;
+      }
       const thread = threadByMessageId.get(row.messageId);
       if (!thread) {
         // Thread data unavailable; leave row unchanged but recompute status vs clock.
@@ -788,8 +940,36 @@ export function resolveSlaLedger(opts: ResolveOptions): ResolveResult {
   const breachedAfter = processActive(ledger.breached);
   const openAfter = processActive(ledger.open);
 
+  // --- Suppressed bucket pass: re-promote rows the classifier flipped
+  // back to `true`/`unknown` (rare — happens when a previously-closed
+  // thread gets a fresh ask). Rows still flagged `false` stay put with a
+  // refreshed age cell.
+  const suppressedAfter: SlaRow[] = [...suppressedFromActive];
+  const promotedFromSuppressed: SlaRow[] = [];
+  for (const row of ledger.suppressed) {
+    if (row.replyOwed === "false") {
+      suppressedAfter.push({
+        ...row,
+        statusCell: "🔇 suppressed",
+        overdueOrRemaining: formatAge(row.receivedAtUtc, nowMs),
+      });
+    } else {
+      promotedFromSuppressed.push(recomputeRowStatus(row, nowMs));
+    }
+  }
+
   // Combine re-opened rows into open or breached based on status.
   for (const r of reopenRows) {
+    if (r.statusCell.includes("breached")) {
+      breachedAfter.push(r);
+    } else {
+      openAfter.push(r);
+    }
+  }
+
+  // Rows that the classifier re-judged as needing reply (flipped suppressed
+  // → active) re-enter the active stream and get partitioned by status.
+  for (const r of promotedFromSuppressed) {
     if (r.statusCell.includes("breached")) {
       breachedAfter.push(r);
     } else {
@@ -842,12 +1022,21 @@ export function resolveSlaLedger(opts: ResolveOptions): ResolveResult {
   const headerCountsLine = `Open: ${newOpen.length} | Breached: ${newBreached.length} (fast: ${fastBreached}, normal: ${normalBreached}, slow: ${slowBreached})`;
   const lastComputedLine = `Last computed: ${formatUtcMinuteWithSuffix(now)}`;
 
+  // Sort suppressed by receivedAt descending so newest closures surface first.
+  suppressedAfter.sort((a, b) =>
+    (b.receivedAtUtc ?? "").localeCompare(a.receivedAtUtc ?? ""),
+  );
+
   const updatedLedger: SlaLedger = {
     ...ledger,
     headerCountsLine,
     lastComputedLine,
     breached: newBreached,
     open: newOpen,
+    suppressed: suppressedAfter,
+    // First refresh after migration self-heals: ensure the section heading
+    // gets serialized even if the source ledger predates the new schema.
+    suppressedSectionPresent: true,
     resolved: trimmedResolved,
   };
 

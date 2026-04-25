@@ -141,6 +141,15 @@ export interface SlaThread {
   thread_messages: SlaThreadMessage[];
 }
 
+/**
+ * Tri-state semantic-intent flag emitted by the classifier per ledger row
+ * (ai-brain#112). `"true"` → reply is owed by team/user; `"false"` → thread
+ * semantically closed (confirmation, fyi, rejection, bulk-brief-not-selected),
+ * row routed to `## Auto-suppressed`; `"unknown"` → legacy/pre-migration row,
+ * treated as `true` by the resolver until first re-sweep judges it.
+ */
+export type ReplyOwed = "true" | "false" | "unknown";
+
 export type ExecutionResult =
   | { ok: true }
   | { ok: false; reason: string };
