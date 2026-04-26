@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# improve-cron.sh — runs weekly Sunday 04:00 local via launchd (com.brain.improve).
-# Invokes /improve in full auto-batch mode: Phase 1 ranks, then the wrapper
-# re-invokes /improve <top-candidate> for full Phase 1-5 on the chosen skill.
+# improve-cron.sh — runs daily 20:00 local via launchd (com.brain.improve).
+# Invokes /improve in full auto-batch mode: Step 0 (memory triage), then Phase 1
+# ranks, then the wrapper re-invokes /improve <top-candidate> for full
+# Phase 1-5 on the chosen skill. Daily cadence is safe because the weekly
+# quota gate self-throttles when the budget gets tight.
 #
 # Gates (in order):
-#   1. Same-week dedup (.last-run marker, written only on success)
-#   2. Weekly quota skip (ccstatusline cache, env-overridable threshold)
-#   3. GUARD — /improve evals must exist with >= MIN cases
-#   4. GUARD — no recent human commits to skills/improve/ without Claude
+#   1. Weekly quota skip (ccstatusline cache, env-overridable threshold) — natural
+#      backpressure; the same-week dedup gate that previously short-circuited
+#      Sunday-only firing was removed when the cadence flipped to daily.
+#   2. GUARD — /improve evals must exist with >= MIN cases
+#   3. GUARD — no recent human commits to skills/improve/ without Claude
 #      co-author (signals user had to correct /improve; auto must stop and
 #      wait for user review). See issue sonthanh/ai-brain#8 "red flag" req.
 #
@@ -24,7 +27,6 @@ export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v22.16.0/bin:/opt/homebre
 VAULT="${IMPROVE_VAULT:-$HOME/work/brain}"
 STATE_DIR="${IMPROVE_STATE_DIR:-$HOME/.local/state/improve}"
 LOG_FILE="$STATE_DIR/cron.log"
-LAST_RUN="$STATE_DIR/.last-run"
 ENV_FILE="${IMPROVE_ENV_FILE:-$HOME/.config/brain/env}"
 USAGE_FILE="${IMPROVE_USAGE_FILE:-$HOME/.cache/ccstatusline/usage.json}"
 WEEKLY_THRESHOLD="${IMPROVE_THRESHOLD:-80}"
@@ -72,11 +74,6 @@ send_telegram() {
     -d "$payload" >/dev/null 2>&1 || log "telegram: send failed"
 }
 
-# ISO week tag (YYYY-Www) — used for same-week dedup since this cron is weekly.
-iso_week() {
-  date "+%G-W%V"
-}
-
 log "=== improve tick (dry_run=$DRY_RUN model=$MODEL) ==="
 
 # ---- Pre-flight
@@ -92,15 +89,8 @@ if [[ ! -d "$VAULT" ]]; then
   exit 1
 fi
 
-# ---- Same-week dedup (defensive against double-fire within the same ISO week).
-THIS_WEEK=$(iso_week)
-if [[ -f "$LAST_RUN" && "$(cat "$LAST_RUN" 2>/dev/null)" == "$THIS_WEEK" ]]; then
-  log "already ran this week ($THIS_WEEK) — skipping"
-  exit 0
-fi
-
-# ---- Weekly quota gate. Skip path does NOT write .last-run so the next
-# scheduled run (or a manual retry after quota resets) can still proceed.
+# ---- Weekly quota gate. The same-week dedup that lived here was removed when
+# cadence flipped to daily — quota is the only natural-backpressure gate now.
 if [[ -f "$USAGE_FILE" ]]; then
   DECISION=$(jq -r --argjson threshold "$WEEKLY_THRESHOLD" '
     def reset_epoch:
@@ -175,33 +165,41 @@ if (( USER_CORRECTIONS > 0 )); then
 fi
 log "guard-2 ok: no user corrections to skills/improve/ since $REVIEW_WINDOW"
 
-# ---- Step 0 probe: count pending feedback files (before dry-run short-circuit
-# so dry-run logs include the count without invoking claude).
-STEP0_PENDING=$(find "$VAULT/daily/feedback-pending" -maxdepth 1 -name '*.md' ! -name 'README.md' 2>/dev/null | wc -l | tr -d ' ')
-log "step 0 probe: $STEP0_PENDING pending feedback file(s) in daily/feedback-pending/"
+# ---- Step 0 probe: count memory feedback files across all Claude account dirs.
+# The realpath-dedupe mirrors what /improve memory does (Step 0.0 — symlinks
+# between accounts must not double-count).
+STEP0_PENDING=$(python3 - <<'PY' 2>/dev/null | wc -l | tr -d ' '
+import glob, os, sys
+seen = set()
+for f in glob.glob(os.path.expanduser('~/.claude*/projects/*/memory/feedback_*.md')):
+    canon = os.path.realpath(f)
+    if canon not in seen:
+        seen.add(canon)
+        print(canon)
+PY
+)
+log "step 0 probe: $STEP0_PENDING memory feedback file(s) across ~/.claude*/projects/*/memory/"
 
 # ---- Dry-run short-circuit (acceptance-test path)
 if (( DRY_RUN == 1 )); then
-  log "dry-run: skipping claude invocation; would orchestrate: step0=/improve feedback (if $STEP0_PENDING > 0) → step1=/improve → parse top candidate → step2=/improve <top>"
+  log "dry-run: skipping claude invocation; would orchestrate: step0=/improve memory (always — also handles index reconcile + expiry) → step1=/improve → parse top candidate → step2=/improve <top>"
   log "=== improve done (dry-run) ==="
   exit 0
 fi
 
-# ---- Step 0: Phase 0 — encode pending feedback (before log-driven phases).
+# ---- Step 0: Phase 0 — memory triage + index reconcile + expiry.
 # Runs BEFORE Phase 1 so explicit user feedback takes precedence over inferred
-# log patterns. Failure here is NON-BLOCKING — we still proceed to Phase 1 so
-# Phase 0 bugs don't stall log-based improvements.
-if (( STEP0_PENDING > 0 )); then
-  log "step 0: invoking /improve feedback to encode $STEP0_PENDING file(s)"
-  if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve feedback" >> "$LOG_FILE" 2>&1; then
-    log "step 0 completed"
-  else
-    RC=$?
-    log "step 0 failed (exit=$RC) — continuing to Phase 1 (feedback gate is non-blocking)"
-    send_telegram "*Improve Step 0 Failed*: \`/improve feedback\` cron exited $RC. Continuing to Phase 1. Check \`$LOG_FILE\`."
-  fi
+# log patterns. Always invoked (even when STEP0_PENDING=0) because Step 0.5
+# (index reconcile) and Step 0.7 (expiry) are useful regardless of new feedback.
+# Failure here is NON-BLOCKING — we still proceed to Phase 1 so Phase 0 bugs
+# don't stall log-based improvements.
+log "step 0: invoking /improve memory (triage=$STEP0_PENDING, index reconcile, expiry)"
+if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve memory" >> "$LOG_FILE" 2>&1; then
+  log "step 0 completed"
 else
-  log "step 0: no pending feedback — skipping to Phase 1"
+  RC=$?
+  log "step 0 failed (exit=$RC) — continuing to Phase 1 (memory gate is non-blocking)"
+  send_telegram "*Improve Step 0 Failed*: \`/improve memory\` cron exited $RC. Continuing to Phase 1. Check \`$LOG_FILE\`."
 fi
 
 # ---- Step 1: Phase 1 rank-only, capture output to parse top candidate.
@@ -233,7 +231,6 @@ cat "$STEP1_OUT" >> "$LOG_FILE"
 TOP=$(grep -oE '^TOP_CANDIDATE:[[:space:]]*[A-Za-z0-9_.-]+' "$STEP1_OUT" | tail -1 | awk '{print $NF}')
 if [[ -z "$TOP" || "$TOP" == "none" ]]; then
   log "step 1: no top candidate (TOP='${TOP:-<missing marker>}') — ending batch"
-  echo "$THIS_WEEK" > "$LAST_RUN"
   log "=== improve done (no candidate) ==="
   exit 0
 fi
@@ -243,13 +240,12 @@ log "step 1: top candidate = $TOP"
 log "step 2: invoking /improve $TOP (full pipeline)"
 if cd "$VAULT" && claude --dangerously-skip-permissions --model "$MODEL" -p "/improve $TOP" >> "$LOG_FILE" 2>&1; then
   log "improve completed successfully (candidate=$TOP)"
-  echo "$THIS_WEEK" > "$LAST_RUN"
   log "=== improve done ==="
   exit 0
 else
   RC=$?
   log "improve failed on $TOP (exit=$RC)"
-  send_telegram "*Improve Failed*: \`/improve $TOP\` cron exited $RC on $(date +%Y-%m-%d) ($THIS_WEEK). Check \`$LOG_FILE\`."
+  send_telegram "*Improve Failed*: \`/improve $TOP\` cron exited $RC on $(date +%Y-%m-%d). Check \`$LOG_FILE\`."
   log "=== improve done (failed) ==="
   exit "$RC"
 fi
