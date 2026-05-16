@@ -32,10 +32,22 @@ function stepSlice(yml: string, stepMarker: string, endMarker?: string): string 
 
 describeIfBrain("learning-file workflow integration", () => {
   describe("Guard 14 — learnings-file-classify-integration", () => {
-    test("classify-with-claude prompt step references gmail-classify-learnings.md", () => {
+    test("classifier prompt build (or classify) step references gmail-classify-learnings.md", () => {
+      // The classifier prompt assembly moved from inline-in-workflow to a
+      // separate `Build classifier prompt` step (2026-05 refactor — script
+      // `scripts/gmail-triage/pre-classify.ts` reads the learnings file).
+      // Either name is acceptable so this guard tolerates the workflow
+      // shape change.
       const yml = loadBrainWorkflow();
-      const classifyStep = stepSlice(yml, "Classify with Claude", "Run Gmail cleanup");
-      expect(classifyStep).toContain("business/intelligence/gmail-classify-learnings.md");
+      const buildStep = stepSlice(yml, "Build classifier prompt", "Classify with Claude");
+      const classifyStep = stepSlice(yml, "Classify with Claude", "Split classifier output");
+      const combined = buildStep + "\n" + classifyStep;
+      // Either the workflow embeds the path directly, or it invokes the
+      // pre-classify script that reads the file from a known repo path.
+      const referencesFile =
+        combined.includes("business/intelligence/gmail-classify-learnings.md") ||
+        combined.includes("scripts/gmail-triage/pre-classify.ts");
+      expect(referencesFile).toBe(true);
     });
 
     test("gmail-classify-learnings.md is NOT referenced inside the draft-replies step", () => {
