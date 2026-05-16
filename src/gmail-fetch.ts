@@ -75,10 +75,16 @@ export async function fetchUnreadEmails(options: {
 }
 
 /**
- * Parse sla-open.md and extract Message IDs from the `## Breached` + `## Open
- * (within SLA)` tables only. Skip the `## Resolved` table — its column layout
- * differs (no `To` column), so column-5 indexing would pick up the `Received`
- * date and pass it to Gmail as a message ID.
+ * Parse sla-open.md and extract Message IDs from `## Breached`, `## Open
+ * (within SLA)`, AND `## Resolved` tables. The Resolved layout has one
+ * fewer column (no `To`), so its Message ID is at col 4 instead of col 5.
+ *
+ * Resolved rows are included so the resolver's re-open pass can detect
+ * partners re-engaging on previously-resolved threads. Without this, the
+ * re-open detection path receives no thread data and never fires —
+ * confirmed bug 2026-05-16 (Kerrie ES filing 19e2583c9748bb1f: Resolved
+ * 2026-05-14 08:43 UTC, thread msg[2] Kerrie follow-up at 08:47 UTC via
+ * via-X group rewrite; should have reopened, didn't).
  */
 function parseLedgerMessageIds(ledgerPath: string): string[] {
   let content: string;
@@ -89,17 +95,20 @@ function parseLedgerMessageIds(ledgerPath: string): string[] {
   }
 
   const ids: string[] = [];
-  let activeSection: "breached" | "open" | null = null;
+  let activeSection: "breached" | "open" | "resolved" | null = null;
   for (const line of content.split("\n")) {
     if (/^##\s+Breached\s*$/.test(line)) { activeSection = "breached"; continue; }
     if (/^##\s+Open\s*\(within SLA\)\s*$/.test(line)) { activeSection = "open"; continue; }
+    if (/^##\s+Resolved\b/.test(line)) { activeSection = "resolved"; continue; }
     if (/^##\s+/.test(line)) { activeSection = null; continue; }
     if (activeSection === null) continue;
     if (!line.startsWith("|") || line.startsWith("|--") || line.startsWith("| Tier")) continue;
     const cols = line.split("|").map((c) => c.trim()).filter(Boolean);
-    // Breached + Open tables carry 11 populated columns; Message ID is col 5.
-    if (cols.length >= 6 && cols[5] && !cols[5].startsWith("Message")) {
-      ids.push(cols[5]);
+    // Breached/Open: Message ID at col 5 (after Tier, Owner, From, To, Subject).
+    // Resolved: Message ID at col 4 (no To column — schema is Tier, Owner, From, Subject, Message ID, ...).
+    const idIdx = activeSection === "resolved" ? 4 : 5;
+    if (cols.length > idIdx && cols[idIdx] && !cols[idIdx].startsWith("Message")) {
+      ids.push(cols[idIdx]);
     }
   }
   return ids;

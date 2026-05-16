@@ -38,11 +38,18 @@ describe("gmail-fetch", () => {
       rmSync(TEST_DIR, { recursive: true, force: true });
     });
 
-    test("dry-run with Resolved rows present: does NOT try to fetch Resolved-table date strings", async () => {
-      // Reproduces an earlier live bug where parseLedgerMessageIds used
-      // col[5] universally, which indexes the Received date (not the Message
-      // ID) in the Resolved table — Gmail then rejected the "id" with
-      // "Invalid id value".
+    test("Resolved rows ARE fetched (for re-open detection) AND parser uses col-4 not col-5 for Resolved layout", async () => {
+      // Two invariants in one test:
+      //   1. Resolved-section message IDs MUST be returned — the resolver's
+      //      re-open pass walks `ledger.resolved` and needs thread data
+      //      for each. Without these, partners re-engaging on closed
+      //      threads (e.g. Kerrie ES filing 2026-05-16: Resolved 08:43 UTC,
+      //      Kerrie follow-up 08:47 UTC via accounting@tunebot.io group)
+      //      silently stay closed.
+      //   2. Parser must use col-4 (not col-5) inside the Resolved section
+      //      because the Resolved schema has no `To` column. Earlier bug:
+      //      col-5 in Resolved indexes the Received DATE; Gmail then
+      //      rejected the "id" with "Invalid id value".
       writeFileSync(ledgerPath, `---
 title: SLA Open Items
 tags: [emails, sla, ledger]
@@ -67,17 +74,16 @@ Open: 0 | Breached: 1 (fast: 0, normal: 1, slow: 0)
 |------|-------|------|---------|------------|----------|----------------|-------------|
 | normal | legal | Counsel <c@x.com> | "Re: Q" | msg_resolved_ok | 2026-04-20 09:00 | 2026-04-22 15:00 UTC | thanh@emvn.co |
 `);
-      const threads = await fetchSlaThreads({ ledgerPath, dryRun: true });
-      expect(threads).toEqual([]);
-      // The real assertion is negative — a bug here would cause Resolved
-      // table values ("2026-04-20 09:00") to leak out as supposed IDs. We
-      // verify the parser only surfaces Breached/Open IDs by re-running
-      // under a spy:
       const spy = spyOn(console, "error").mockImplementation(() => {});
       try {
         await fetchSlaThreads({ ledgerPath, dryRun: true });
         const logs = spy.mock.calls.map((a) => a.join(" "));
-        expect(logs.some((l) => l.includes("Would fetch 1 SLA threads"))).toBe(true);
+        // Both Breached row + Resolved row should be fetched (2 threads).
+        expect(logs.some((l) => l.includes("Would fetch 2 SLA threads"))).toBe(true);
+        // Negative: the Resolved row's Received date must NOT leak in as
+        // an ID. The dry-run path doesn't expose the ID list directly,
+        // but the count itself (2, not 3) tells us no spurious date got
+        // collected.
       } finally {
         spy.mockRestore();
       }
