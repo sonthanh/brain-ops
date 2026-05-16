@@ -36,11 +36,12 @@ function parseArgs(raw: string[]): Args {
   };
 }
 
-async function loadThreads(args: Args): Promise<SlaThread[]> {
+async function loadThreads(args: Args, teamDomains?: Set<string>): Promise<SlaThread[]> {
   // Precedence:
   // 1. --threads <path> → read pre-fetched JSON (used by gmail-triage.yml post-step
   //    to reuse the same thread data the classifier saw — avoids a second API call).
-  // 2. --credentials <path> → fetch threads live from Gmail API.
+  // 2. --credentials <path> → fetch threads live from Gmail API (with cross-thread
+  //    reply search when teamDomains is supplied).
   // 3. Neither → empty array (recompute-only mode: no resolution, just status + counts).
   if (args.threadsPath) {
     if (!existsSync(args.threadsPath)) {
@@ -59,6 +60,7 @@ async function loadThreads(args: Args): Promise<SlaThread[]> {
       ledgerPath: args.ledgerPath,
       credentialsPath: args.credentialsPath,
       dryRun: args.dryRun,
+      ...(teamDomains ? { teamDomains } : {}),
     });
   }
   console.error(`[sla-refresh] no --threads or --credentials — running in recompute-only mode`);
@@ -73,12 +75,11 @@ export async function runRefresh(args: Args): Promise<number> {
   const original = readFileSync(args.ledgerPath, "utf-8");
   const parsed = parseSlaLedger(original);
 
-  // Thread + identity data loaded first — the rule-sweep pass below consumes
-  // threads to unwrap `via X` group rewrites when matching portal/mass-blast
-  // patterns. Without threads it still runs (legacy path) but only matches
-  // patterns visible on the stored ledger row.
-  const threads = await loadThreads(args);
+  // Identities are loaded first because thread-fetch uses teamDomains for
+  // the cross-thread reply search (catches Zendesk / forked-thread team
+  // replies). Without teamDomains, the fetch is single-thread only.
   const identities = parseIdentities(args.gmailRulesPath);
+  const threads = await loadThreads(args, identities.teamDomains);
   const now = new Date();
 
   // Rule-sweep pass (deterministic invariants). Drops awareness / automation /

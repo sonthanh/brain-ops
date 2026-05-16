@@ -178,6 +178,22 @@ export interface SlaThreadMessage {
 export interface SlaThread {
   message_id: string;
   thread_messages: SlaThreadMessage[];
+  /**
+   * Team-outbound messages addressed to the same external partner found in
+   * OTHER Gmail threads (different threadId) after the SLA inbound's
+   * received_at. Resolver treats these as candidate replies under the same
+   * 4-guard rule.
+   *
+   * Background: production patterns like Zendesk and forked accounting
+   * threads create new threadIds when team replies, so the same-thread walk
+   * misses them. Resolver gets "no reply" for cases the team actually
+   * handled out-of-thread.
+   *
+   * Populated by `fetchSlaThreads` when `teamDomains` is provided; absent for
+   * legacy callers. The resolver treats absent ≡ empty array (no
+   * cross-thread evidence available).
+   */
+  cross_thread_replies?: SlaThreadMessage[];
 }
 
 /**

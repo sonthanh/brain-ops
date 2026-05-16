@@ -443,6 +443,92 @@ describe("resolveSlaLedger — 4-guard rule", () => {
     expect([2, 3]).toContain(result.guardFailures[0]!.guardNumber);
   });
 
+  test("cross-thread reply — team replied to external in different thread (Ed Scott / Freddie pattern)", () => {
+    // Production scenario 2026-05-16: SLA same-thread shows only the
+    // external's follow-up because team replied in a forked thread
+    // (Zendesk new-ticket, accounting fork). Resolver must consider
+    // cross_thread_replies when evaluating guards.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: "Freddie Nilsson <freddie@finanshuset.nu>",
+      to: "business@emvn.co",
+    })] };
+    const slaThread: SlaThread = {
+      message_id: MESSAGE_ID,
+      thread_messages: [
+        {
+          from: "Freddie Nilsson <freddie@finanshuset.nu>",
+          to: "business@emvn.co",
+          date: "2026-04-30T19:22:00Z",
+          auto_submitted: null,
+          x_original_sender: null,
+          reply_to: null,
+        },
+      ],
+      cross_thread_replies: [
+        {
+          message_id: "cross_1",
+          from: "Thanh Hoang <business@emvn.co>",
+          to: "Freddie Nilsson <freddie@finanshuset.nu>",
+          date: "2026-05-08T09:21:00Z",
+          auto_submitted: null,
+          x_original_sender: null,
+          reply_to: null,
+        },
+      ],
+    };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [slaThread],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+    expect(result.ledger.breached).toEqual([]);
+    expect(result.ledger.resolved).toHaveLength(1);
+    expect(result.ledger.resolved[0]!.resolvedBy).toContain("business@emvn.co");
+  });
+
+  test("cross-thread reply — Zendesk forked thread with auto-generated counts as reply (John Fulford pattern)", () => {
+    // Zendesk creates a new threadId on every ticket response. The forked
+    // thread's outbound to the customer has Auto-Submitted: auto-generated.
+    // Strict guard #4 only blocks `auto-replied`, so this resolves.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: "John Fulford <john@johnfulfordmusic.com>",
+      to: "business@emvn.co",
+    })] };
+    const slaThread: SlaThread = {
+      message_id: MESSAGE_ID,
+      thread_messages: [
+        {
+          from: "John Fulford <john@johnfulfordmusic.com>",
+          to: "business@emvn.co",
+          date: "2026-04-30T17:37:00Z",
+          auto_submitted: null,
+          x_original_sender: null,
+          reply_to: null,
+        },
+      ],
+      cross_thread_replies: [
+        {
+          message_id: "cross_zendesk",
+          from: "EMVN Support <support@emvn.zendesk.com>",
+          to: "John Fulford <john@johnfulfordmusic.com>",
+          date: "2026-05-05T10:38:00Z",
+          auto_submitted: "auto-generated",
+          x_original_sender: "support@emvn.zendesk.com",
+          reply_to: null,
+        },
+      ],
+    };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [slaThread],
+      identities: { ...IDENTITIES, teamDomains: new Set([...IDENTITIES.teamDomains, "emvn.zendesk.com"]) },
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+  });
+
   test("via-X group rewrite — match SLA message by message_id when present", () => {
     // When thread has multiple messages with timestamps overlapping
     // received_at (rare but possible with re-engagements), match by

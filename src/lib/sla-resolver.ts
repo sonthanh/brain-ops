@@ -700,11 +700,14 @@ function evaluateGuards(
       },
     };
   }
-  // Walk thread messages in chronological order.
-  const withMs = thread.thread_messages.map((m) => ({
-    msg: m,
-    ms: parseEmailDateMs(m.date),
-  }));
+  // Walk thread messages in chronological order. Cross-thread replies
+  // (team-outbound to the partner found in OTHER threads — Zendesk forks,
+  // accounting reply in a forked thread) are folded in as additional
+  // candidates and evaluated under the same 4-guard rule, so the resolver
+  // doesn't miss out-of-thread team replies.
+  const sameThread = thread.thread_messages.map((m) => ({ msg: m, ms: parseEmailDateMs(m.date) }));
+  const crossThread = (thread.cross_thread_replies ?? []).map((m) => ({ msg: m, ms: parseEmailDateMs(m.date) }));
+  const withMs = [...sameThread, ...crossThread];
   withMs.sort((a, b) => a.ms - b.ms);
 
   // Determine the real external party for guard #3. When the SLA inbound was
