@@ -73,15 +73,19 @@ export async function runRefresh(args: Args): Promise<number> {
   const original = readFileSync(args.ledgerPath, "utf-8");
   const parsed = parseSlaLedger(original);
 
-  // Rule-sweep pass (deterministic invariants — no threads needed). Drops
-  // awareness / automation / billing / invitation rows that shouldn't be in
-  // the active ledger regardless of thread state. Runs BEFORE resolveSlaLedger
-  // so the resolver sees a clean row set.
-  const validation = validateSlaLedger(parsed);
-
+  // Thread + identity data loaded first — the rule-sweep pass below consumes
+  // threads to unwrap `via X` group rewrites when matching portal/mass-blast
+  // patterns. Without threads it still runs (legacy path) but only matches
+  // patterns visible on the stored ledger row.
   const threads = await loadThreads(args);
   const identities = parseIdentities(args.gmailRulesPath);
   const now = new Date();
+
+  // Rule-sweep pass (deterministic invariants). Drops awareness / automation /
+  // billing / invitation / portal / mass-blast rows that shouldn't be in the
+  // active ledger. Runs BEFORE resolveSlaLedger so the resolver sees a clean
+  // row set.
+  const validation = validateSlaLedger(parsed, { threads });
 
   const result = resolveSlaLedger({
     ledger: validation.ledger,

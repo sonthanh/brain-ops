@@ -1189,6 +1189,18 @@ export interface ValidationResult {
   drops: ValidationDrop[];
 }
 
+export interface ValidationOptions {
+  /**
+   * Optional thread data keyed by ledger row `message_id`. When supplied, the
+   * validator unwraps `via X` group rewrites by looking at the SLA inbound's
+   * `X-Original-Sender` / `Reply-To` headers + the original `To` field, so
+   * portal-notification + mass-blast patterns match the real sender/recipient,
+   * not the rewritten group address. Without threads, the validator falls back
+   * to checking the ledger row's stored `From`/`To` (legacy behaviour).
+   */
+  threads?: SlaThread[];
+}
+
 /**
  * Sweep the ledger's Breached + Open sections for rows that violate the
  * deterministic invariants. Returns a ledger with violators removed and the
@@ -1202,34 +1214,72 @@ export interface ValidationResult {
  *      (noreply@…, notifications@…, etc.).
  *   3. From-address localpart matches BILLING_KNOWN — vendor billing
  *      notifications; team uses the vendor dashboard, not email replies.
- *   4. Subject matches INVITATION_SUBJECT — HR / calendar invitations.
+ *   4. From-address matches PORTAL_NOTIFICATION_KNOWN — vendor portal/e-contract
+ *      services. Checked against the row's stored From AND (when threads are
+ *      supplied) the unwrapped X-Original-Sender, so BBCIncorp / EFY rows
+ *      routed through team Google Groups still match.
+ *   5. Subject matches INVITATION_SUBJECT — HR / calendar invitations.
+ *   6. To matches MASS_BLAST_TO (undisclosed-recipients). Checked against the
+ *      row's stored To AND (when threads are supplied) the SLA inbound's
+ *      original To, so fanout RFPs that lost the broadcast signal during
+ *      ingestion still match.
  *
  * Caller wires the output into runRefresh BEFORE resolveSlaLedger so the
  * sweep's effects apply first, then resolution runs on the reduced set.
  */
-export function validateSlaLedger(ledger: SlaLedger): ValidationResult {
+export function validateSlaLedger(
+  ledger: SlaLedger,
+  opts: ValidationOptions = {},
+): ValidationResult {
   const drops: ValidationDrop[] = [];
+  const threadByMid = new Map((opts.threads ?? []).map((t) => [t.message_id, t]));
+
+  function unwrappedSlaInbound(row: SlaRow): SlaThreadMessage | undefined {
+    const t = threadByMid.get(row.messageId);
+    if (!t) return undefined;
+    // SLA inbound = thread message with matching id, else earliest.
+    const byId = row.messageId
+      ? t.thread_messages.find((m) => m.message_id === row.messageId)
+      : undefined;
+    if (byId) return byId;
+    const sorted = t.thread_messages
+      .map((m) => ({ m, ms: parseEmailDateMs(m.date) }))
+      .sort((a, b) => a.ms - b.ms);
+    return sorted[0]?.m;
+  }
 
   function checkRow(row: SlaRow): string[] {
     const reasons: string[] = [];
-    const addr = extractAddress(row.from);
+    const rowAddr = extractAddress(row.from);
+    const inbound = unwrappedSlaInbound(row);
+    const realAddr = inbound ? actualSenderAddress(inbound) : rowAddr;
+    const realTo = inbound?.to || row.to;
+
     if (row.category === "awareness") {
       reasons.push("category=awareness in active ledger");
     }
-    if (addr && AUTOMATION_LP.test(addr)) {
-      reasons.push(`automation-sender localpart (${addr})`);
+    if (rowAddr && AUTOMATION_LP.test(rowAddr)) {
+      reasons.push(`automation-sender localpart (${rowAddr})`);
+    } else if (realAddr && realAddr !== rowAddr && AUTOMATION_LP.test(realAddr)) {
+      reasons.push(`automation-sender localpart via-X-unwrapped (${realAddr})`);
     }
-    if (addr && BILLING_KNOWN.test(addr)) {
-      reasons.push(`billing-known localpart (${addr})`);
+    if (rowAddr && BILLING_KNOWN.test(rowAddr)) {
+      reasons.push(`billing-known localpart (${rowAddr})`);
+    } else if (realAddr && realAddr !== rowAddr && BILLING_KNOWN.test(realAddr)) {
+      reasons.push(`billing-known localpart via-X-unwrapped (${realAddr})`);
     }
-    if (addr && PORTAL_NOTIFICATION_KNOWN.test(addr)) {
-      reasons.push(`portal-notification sender (${addr}) — action lives on vendor portal, not email`);
+    if (rowAddr && PORTAL_NOTIFICATION_KNOWN.test(rowAddr)) {
+      reasons.push(`portal-notification sender (${rowAddr}) — action lives on vendor portal, not email`);
+    } else if (realAddr && realAddr !== rowAddr && PORTAL_NOTIFICATION_KNOWN.test(realAddr)) {
+      reasons.push(`portal-notification sender via-X-unwrapped (${realAddr}) — action lives on vendor portal, not email`);
     }
     if (INVITATION_SUBJECT.test(row.subject)) {
       reasons.push("invitation subject — awareness per taxonomy");
     }
     if (row.to && MASS_BLAST_TO.test(row.to)) {
       reasons.push("mass-blast To (undisclosed-recipients) — no 1:1 reply obligation");
+    } else if (realTo && realTo !== row.to && MASS_BLAST_TO.test(realTo)) {
+      reasons.push("mass-blast To (undisclosed-recipients) inbound-unwrapped — no 1:1 reply obligation");
     }
     return reasons;
   }

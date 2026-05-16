@@ -1014,6 +1014,57 @@ describe("validateSlaLedger", () => {
     expect(result.ledger.open).toEqual([]);
   });
 
+  test("portal-notification — drops via-X group-routed row using X-Original-Sender (BBCIncorp case)", () => {
+    // Production scenario: BBCIncorp's annual-obligation portal notice arrives
+    // at legal@emvn.co Google Group. Ledger stores rewritten From; the real
+    // sender (notification@bbcincorp.com) lives in X-Original-Sender. With
+    // threads supplied, the validator unwraps and matches PORTAL_NOTIFICATION_KNOWN.
+    const row = openRow({
+      messageId: "msg_bbci",
+      from: `"'BBCIncorp Group' via EMVN Legal" <legal@emvn.co>`,
+      to: "legal@emvn.co",
+      subject: '"Annual Obligation Process - Tunebot Ltd."',
+    });
+    const t = thread("msg_bbci", [
+      {
+        message_id: "msg_bbci",
+        from: `"'BBCIncorp Group' via EMVN Legal" <legal@emvn.co>`,
+        to: "legal@emvn.co",
+        date: "2026-05-14T03:53:00Z",
+        x_original_sender: "notification@bbcincorp.com",
+      },
+    ]);
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] }, { threads: [t] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("portal-notification") && r.includes("via-X-unwrapped"))).toBe(true);
+    expect(result.ledger.open).toEqual([]);
+  });
+
+  test("mass-blast — drops row when SLA inbound's original To is undisclosed-recipients (Nikki Butler case)", () => {
+    // Production scenario: Nikki Butler RFP went to undisclosed-recipients
+    // (BCC fanout). Ledger stored the team mailbox in row.to; the original
+    // broadcast signal is in the inbound message's To header. Validator
+    // unwraps via threads and drops the row.
+    const row = openRow({
+      messageId: "msg_nikki",
+      from: "Nikki Butler <nikki@nikkibutlermedia.com>",
+      to: "business@emvn.co",
+      subject: '"Request for Proposals from Nikki Butler"',
+    });
+    const t = thread("msg_nikki", [
+      {
+        message_id: "msg_nikki",
+        from: "Nikki Butler <nikki@nikkibutlermedia.com>",
+        to: "undisclosed-recipients:;",
+        date: "2026-05-05T18:34:00Z",
+      },
+    ]);
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] }, { threads: [t] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("mass-blast") && r.includes("inbound-unwrapped"))).toBe(true);
+    expect(result.ledger.open).toEqual([]);
+  });
+
   test("portal-notification regex stays narrow: only documented portal senders match", () => {
     // The regex is `^(econtract@efyvn\.com|notification@bbcincorp\.com)$`.
     // A look-alike sender at a different domain must not match — proving the
