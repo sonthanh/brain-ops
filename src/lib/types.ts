@@ -177,6 +177,17 @@ export interface SlaThreadMessage {
 
 export interface SlaThread {
   message_id: string;
+  /**
+   * Gmail thread id (the `threadId` Gmail's API returns alongside a message).
+   * Multiple message_ids can share one gmail_thread_id when the same
+   * external party re-engages on an existing conversation — the SLA
+   * tracker then ends up with duplicate active rows pointing at the same
+   * thread (e.g. Kerrie Fan ES Filing 2026-05-14: `19e2583c9748bb1f`
+   * inbound + `19e25ab3fa10dd82` follow-up both inside Gmail thread
+   * `19e2583c9748bb1f`). The resolver's dedupeByThread pass collapses
+   * these. Optional for backwards compat with older fixtures.
+   */
+  gmail_thread_id?: string;
   thread_messages: SlaThreadMessage[];
   /**
    * Team-outbound messages addressed to the same external partner found in

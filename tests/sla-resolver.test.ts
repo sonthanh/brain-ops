@@ -78,9 +78,10 @@ function emptyLedger(): SlaLedger {
   };
 }
 
-function thread(messageId: string, msgs: Array<{ from: string; to: string; date: string; auto_submitted?: string | null; x_original_sender?: string | null; reply_to?: string | null; message_id?: string }>): SlaThread {
+function thread(messageId: string, msgs: Array<{ from: string; to: string; date: string; auto_submitted?: string | null; x_original_sender?: string | null; reply_to?: string | null; message_id?: string }>, gmailThreadId?: string): SlaThread {
   return {
     message_id: messageId,
+    ...(gmailThreadId ? { gmail_thread_id: gmailThreadId } : {}),
     thread_messages: msgs.map((m) => ({
       ...(m.message_id ? { message_id: m.message_id } : {}),
       from: m.from,
@@ -1389,6 +1390,93 @@ describe("resolveSlaLedger — Reply Owed routing", () => {
     expect(out).toContain("## Auto-suppressed");
     expect(out).toContain("Reply Owed");
     expect(out).toContain("## Resolved (last 7 days, audit trail)");
+  });
+});
+
+describe("resolveSlaLedger — dedup by Gmail thread id", () => {
+  test("two rows in same Gmail thread → keep newest, move older to Resolved (Kerrie ES filing case)", () => {
+    // 2026-05-16 production: Kerrie's original inbound to legal@tunebot.io
+    // group (msg_a, received earlier) + her follow-up via
+    // accounting@tunebot.io group (msg_b, received later) both landed inside
+    // Gmail thread `kerrie-es-thread`. Without dedup the SLA ledger carries
+    // two active rows for the same conversation.
+    const rowA = breachedRow({ messageId: "msg_a", receivedAtUtc: "2026-05-14 08:03" });
+    const rowB = breachedRow({ messageId: "msg_b", receivedAtUtc: "2026-05-14 08:47" });
+    const ledger = { ...emptyLedger(), breached: [rowA, rowB] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [
+        // Both threads share the same gmail_thread_id. Empty thread_messages
+        // is fine here — the dedup pass only consumes the thread_id mapping.
+        { message_id: "msg_a", gmail_thread_id: "kerrie-es-thread", thread_messages: [] },
+        { message_id: "msg_b", gmail_thread_id: "kerrie-es-thread", thread_messages: [] },
+      ],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    // Keeper is the newer row (msg_b); msg_a moves to Resolved.
+    expect(result.ledger.breached.map((r) => r.messageId)).toEqual(["msg_b"]);
+    expect(result.ledger.resolved.map((r) => r.messageId)).toContain("msg_a");
+    const mergedRow = result.ledger.resolved.find((r) => r.messageId === "msg_a")!;
+    expect(mergedRow.resolvedBy).toContain("merged-duplicate");
+    expect(mergedRow.resolvedBy).toContain("msg_b");
+    // resolvedIds includes both real resolves and merged duplicates.
+    expect(result.resolvedIds).toContain("msg_a");
+  });
+
+  test("rows in different threads stay separate", () => {
+    const rowA = breachedRow({ messageId: "msg_x", receivedAtUtc: "2026-05-14 08:00" });
+    const rowB = breachedRow({ messageId: "msg_y", receivedAtUtc: "2026-05-14 09:00" });
+    const ledger = { ...emptyLedger(), breached: [rowA, rowB] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [
+        { message_id: "msg_x", gmail_thread_id: "thread-x", thread_messages: [] },
+        { message_id: "msg_y", gmail_thread_id: "thread-y", thread_messages: [] },
+      ],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.breached.map((r) => r.messageId).sort()).toEqual(["msg_x", "msg_y"]);
+    expect(result.ledger.resolved).toEqual([]);
+  });
+
+  test("row without gmail_thread_id stays untouched (no confident dedup signal)", () => {
+    const rowA = breachedRow({ messageId: "msg_a", receivedAtUtc: "2026-05-14 08:00" });
+    const rowB = breachedRow({ messageId: "msg_b", receivedAtUtc: "2026-05-14 09:00" });
+    const ledger = { ...emptyLedger(), breached: [rowA, rowB] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [
+        // Neither thread carries gmail_thread_id — legacy fixture / missed fetch.
+        { message_id: "msg_a", thread_messages: [] },
+        { message_id: "msg_b", thread_messages: [] },
+      ],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    // Both rows stay in Breached — no dedup attempt without confident grouping.
+    expect(result.ledger.breached.map((r) => r.messageId).sort()).toEqual(["msg_a", "msg_b"]);
+    expect(result.ledger.resolved).toEqual([]);
+  });
+
+  test("three rows in same thread collapse to one keeper (newest) + two merged", () => {
+    const r1 = breachedRow({ messageId: "msg_1", receivedAtUtc: "2026-05-14 07:00" });
+    const r2 = breachedRow({ messageId: "msg_2", receivedAtUtc: "2026-05-14 08:00" });
+    const r3 = breachedRow({ messageId: "msg_3", receivedAtUtc: "2026-05-14 09:00" });
+    const ledger = { ...emptyLedger(), breached: [r1, r2, r3] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [
+        { message_id: "msg_1", gmail_thread_id: "shared", thread_messages: [] },
+        { message_id: "msg_2", gmail_thread_id: "shared", thread_messages: [] },
+        { message_id: "msg_3", gmail_thread_id: "shared", thread_messages: [] },
+      ],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.ledger.breached.map((r) => r.messageId)).toEqual(["msg_3"]);
+    expect(result.ledger.resolved.map((r) => r.messageId).sort()).toEqual(["msg_1", "msg_2"]);
   });
 });
 

@@ -1089,6 +1089,90 @@ export function resolveSlaLedger(opts: ResolveOptions): ResolveResult {
     else newOpen.push(r);
   }
 
+  // Dedup pass — group Breached + Open rows by Gmail thread id; collapse
+  // duplicates so a single thread can't sit as N active SLA rows. Production
+  // case 2026-05-16 (Kerrie Fan ES filing): `19e2583c9748bb1f` original
+  // inbound + `19e25ab3fa10dd82` follow-up via the accounting@tunebot.io
+  // group both landed in Gmail thread `19e2583c9748bb1f`. Without this
+  // pass the team-sla-at-risk ledger carries duplicate rows the team
+  // reads as separate obligations.
+  //
+  // Policy: within each thread group, keep the row with the most recent
+  // `receivedAtUtc` (the latest external touch on the thread — the one the
+  // team actually owes a reply to). Move the older row(s) to Resolved with
+  // `resolvedBy = merged-duplicate <newest_messageId>` so the audit trail
+  // is recoverable from `## Resolved`.
+  //
+  // The pass requires `gmail_thread_id` on each fetched thread — populated by
+  // gmail-fetch.ts. Threads without a gmail_thread_id (legacy fixtures, missed
+  // fetch) are left alone — no dedup attempt without confident grouping.
+  const threadIdByMessageId = new Map<string, string>();
+  for (const t of threads) {
+    if (t.gmail_thread_id) {
+      threadIdByMessageId.set(t.message_id, t.gmail_thread_id);
+    }
+  }
+
+  function dedupActive(
+    breached: SlaRow[],
+    open: SlaRow[],
+  ): { breached: SlaRow[]; open: SlaRow[]; merged: ResolvedRow[] } {
+    const allActive = [...breached, ...open];
+    const byThread = new Map<string, SlaRow[]>();
+    const ungroupable: SlaRow[] = [];
+    for (const r of allActive) {
+      const tid = threadIdByMessageId.get(r.messageId);
+      if (!tid) {
+        ungroupable.push(r);
+        continue;
+      }
+      const arr = byThread.get(tid) ?? [];
+      arr.push(r);
+      byThread.set(tid, arr);
+    }
+    const keptActive: SlaRow[] = [...ungroupable];
+    const mergedOut: ResolvedRow[] = [];
+    for (const group of byThread.values()) {
+      if (group.length === 1) {
+        keptActive.push(group[0]!);
+        continue;
+      }
+      // Sort by receivedAtUtc descending — newest first.
+      const sorted = [...group].sort((a, b) =>
+        (b.receivedAtUtc ?? "").localeCompare(a.receivedAtUtc ?? ""),
+      );
+      const keeper = sorted[0]!;
+      keptActive.push(keeper);
+      for (let i = 1; i < sorted.length; i++) {
+        const dupe = sorted[i]!;
+        mergedOut.push({
+          tier: dupe.tier,
+          owner: dupe.owner,
+          from: dupe.from,
+          subject: dupe.subject,
+          messageId: dupe.messageId,
+          receivedAt: dupe.receivedAtUtc,
+          resolvedAtUtc: formatUtcMinuteWithSuffix(now),
+          resolvedBy: `merged-duplicate (kept: ${keeper.messageId}; same Gmail thread)`,
+        });
+      }
+    }
+    return {
+      breached: keptActive.filter((r) => r.statusCell.includes("breached")),
+      open: keptActive.filter((r) => !r.statusCell.includes("breached")),
+      merged: mergedOut,
+    };
+  }
+
+  const deduped = dedupActive(newBreached, newOpen);
+  newBreached.length = 0;
+  newBreached.push(...deduped.breached);
+  newOpen.length = 0;
+  newOpen.push(...deduped.open);
+  // Merged duplicates flow into Resolved alongside the resolver's own resolves.
+  resolvedOut.push(...deduped.merged);
+  for (const m of deduped.merged) resolvedIds.push(m.messageId);
+
   // Stable sort: breached by tier urgency then oldest-first; open by breach_at.
   const TIER_ORDER: Record<SlaTier, number> = { fast: 0, normal: 1, slow: 2 };
   newBreached.sort((a, b) => {

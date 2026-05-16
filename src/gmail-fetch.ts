@@ -103,7 +103,19 @@ function parseLedgerMessageIds(ledgerPath: string): string[] {
     if (/^##\s+/.test(line)) { activeSection = null; continue; }
     if (activeSection === null) continue;
     if (!line.startsWith("|") || line.startsWith("|--") || line.startsWith("| Tier")) continue;
-    const cols = line.split("|").map((c) => c.trim()).filter(Boolean);
+    // Split, then strip ONLY the leading + trailing empty cells (the `|...|`
+    // border tokens). Internal empty cells MUST be preserved — e.g. a
+    // detectReopen-synthesized row with empty `To` would otherwise shift
+    // every column-index left by one. Production case 2026-05-16: synthetic
+    // reopened row had empty To; col-5 then pointed at the Received date
+    // (`2026-05-14 08:47`), Gmail API got that as a message id and 400'd.
+    const raw = line.split("|").map((c) => c.trim());
+    // Drop one leading + one trailing empty (from `|...|` borders). If the
+    // line genuinely starts/ends with non-border content (unusual), leave
+    // alone.
+    if (raw.length >= 2 && raw[0] === "") raw.shift();
+    if (raw.length >= 1 && raw[raw.length - 1] === "") raw.pop();
+    const cols = raw;
     // Breached/Open: Message ID at col 5 (after Tier, Owner, From, To, Subject).
     // Resolved: Message ID at col 4 (no To column — schema is Tier, Owner, From, Subject, Message ID, ...).
     const idIdx = activeSection === "resolved" ? 4 : 5;
@@ -311,6 +323,7 @@ export async function fetchSlaThreads(options: {
 
       threads.push({
         message_id: msgId,
+        gmail_thread_id: threadId,
         thread_messages: threadMessages,
         ...(crossThreadReplies && crossThreadReplies.length > 0
           ? { cross_thread_replies: crossThreadReplies }
