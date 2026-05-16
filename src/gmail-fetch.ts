@@ -121,16 +121,23 @@ function extractAddressLocal(raw: string | null | undefined): string {
 }
 
 /**
- * Format YYYY/MM/DD for Gmail's `after:` query operator. Gmail interprets
- * the date as the user's mailbox timezone, so widen by 1 day backwards to
- * avoid timezone-edge misses.
+ * Format YYYY/MM/DD for Gmail's `after:` query operator. Accepts both
+ * ledger-format `YYYY-MM-DD HH:MM` and RFC 2822 date strings (Gmail headers).
+ * Gmail interprets the date as the user's mailbox timezone, so widen by 1
+ * day backwards to avoid timezone-edge misses.
  */
-function gmailAfterDate(receivedAtUtc: string): string {
-  const m = receivedAtUtc.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return "";
-  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) - 24 * 3_600_000;
-  const d = new Date(t);
-  return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")}`;
+function gmailAfterDate(receivedAt: string): string {
+  let baseMs: number;
+  const isoLike = receivedAt.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoLike) {
+    baseMs = Date.UTC(Number(isoLike[1]), Number(isoLike[2]) - 1, Number(isoLike[3]));
+  } else {
+    const parsed = Date.parse(receivedAt);
+    if (!Number.isFinite(parsed)) return "";
+    baseMs = parsed;
+  }
+  const widened = new Date(baseMs - 24 * 3_600_000);
+  return `${widened.getUTCFullYear()}/${String(widened.getUTCMonth() + 1).padStart(2, "0")}/${String(widened.getUTCDate()).padStart(2, "0")}`;
 }
 
 /**

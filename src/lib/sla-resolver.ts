@@ -552,6 +552,43 @@ export function actualSenderAddress(msg: SlaThreadMessage): string {
   return extractAddress(msg.from);
 }
 
+/**
+ * Known help-desk / ticketing automation subdomains. When a team-side reply
+ * is routed through one of these systems, the customer-facing copy goes
+ * directly to the partner via the help-desk provider's mail server — the
+ * team mailbox only sees the echo with `To:` re-pointed at the internal
+ * group address. Without this, guard #3 (external party must be in To)
+ * fails on every Zendesk-handled thread.
+ *
+ * Detection: actualSenderAddress (via-X unwrapped) matches one of these
+ * subdomains AND auto_submitted=auto-generated AND the candidate is in the
+ * same Gmail thread as the SLA inbound (Gmail clusters by References/Subj).
+ * Resolver then skips guard #3 — the customer DID receive the reply, just
+ * via a mail server we don't have IMAP access to.
+ */
+const HELP_DESK_AUTOMATION_DOMAINS =
+  /\.(zendesk|freshdesk|helpscout|intercom|zoho|kayako|happyfox)\.com$/i;
+
+/**
+ * True when a thread message looks like a help-desk team-side echo (Zendesk,
+ * Freshdesk, etc.). Used by guard #3 to suppress the "external not in To"
+ * failure, because the customer-facing copy lives on the help-desk side.
+ */
+function isHelpDeskTeamEcho(msg: SlaThreadMessage, identities: Identities): boolean {
+  if ((msg.auto_submitted ?? "").toLowerCase().trim() !== "auto-generated") return false;
+  const realSender = actualSenderAddress(msg);
+  if (!realSender) return false;
+  // Either the realSender is a team domain (legacy: zendesk subdomain added
+  // to teamDomains) OR it matches the help-desk domain regex (subdomain not
+  // yet configured but pattern is clear).
+  const at = realSender.indexOf("@");
+  if (at < 0) return false;
+  const domain = realSender.slice(at + 1);
+  const teamHit = identities.teamDomains.has(domain);
+  const patternHit = HELP_DESK_AUTOMATION_DOMAINS.test(realSender);
+  return teamHit && patternHit;
+}
+
 export function classifySender(
   address: string,
   identities: Identities,
@@ -760,18 +797,25 @@ function evaluateGuards(
     // Guard #3: reply addressed TO the original external party (allow CC/BCC — the
     // "to" header alone is checked). Internal CC-only means to header doesn't
     // contain the external party.
+    //
+    // Exception: help-desk team echoes (Zendesk, Freshdesk, …) — the team
+    // mailbox sees an internal-only echo while the customer-facing copy went
+    // to the partner via the help-desk provider's mail server. Trust the
+    // echo as resolution evidence; the customer DID receive the reply.
     const toAddresses = (msg.to ?? "")
       .split(",")
       .map((s) => extractAddress(s))
       .filter(Boolean);
     if (externalAddr && toAddresses.length > 0 && !toAddresses.includes(externalAddr)) {
-      lastFailure = {
-        messageId: row.messageId,
-        guardNumber: 3,
-        rawReason: `reply from=${senderAddr}, to=${toAddresses.join(",")} (external party ${externalAddr} not in To)`,
-        latestCandidate,
-      };
-      continue;
+      if (!isHelpDeskTeamEcho(msg, identities)) {
+        lastFailure = {
+          messageId: row.messageId,
+          guardNumber: 3,
+          rawReason: `reply from=${senderAddr}, to=${toAddresses.join(",")} (external party ${externalAddr} not in To)`,
+          latestCandidate,
+        };
+        continue;
+      }
     }
 
     // Guard #4: reply does NOT carry Auto-Submitted=auto-replied.

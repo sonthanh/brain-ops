@@ -488,6 +488,73 @@ describe("resolveSlaLedger — 4-guard rule", () => {
     expect(result.ledger.resolved[0]!.resolvedBy).toContain("business@emvn.co");
   });
 
+  test("help-desk echo — Zendesk team echo with internal-only To resolves when domain is in teamDomains (John Fulford pattern, in-thread)", () => {
+    // The Zendesk echo lands in the SAME Gmail thread (clustered by References/
+    // Subject) but its To is the internal team group, not the customer.
+    // Without the help-desk-echo exception, guard #3 fails and the row stays
+    // stuck. With the exception, the row resolves because the customer-facing
+    // copy lives on Zendesk's mail server (out of our IMAP view).
+    const teamWithZendesk = {
+      ...IDENTITIES,
+      teamDomains: new Set([...IDENTITIES.teamDomains, "emvn.zendesk.com"]),
+    };
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: "John Fulford <john@johnfulfordmusic.com>",
+      to: "business@emvn.co",
+    })] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          from: "John Fulford <john@johnfulfordmusic.com>",
+          to: "business@emvn.co",
+          date: "2026-04-30T17:37:00Z",
+        },
+        {
+          from: `"'License (EMVN Support)' via Business Development" <business@emvn.co>`,
+          to: "EMVN Business <business@emvn.co>",
+          date: "2026-05-05T10:38:00Z",
+          x_original_sender: "support@emvn.zendesk.com",
+          auto_submitted: "auto-generated",
+        },
+      ])],
+      identities: teamWithZendesk,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+  });
+
+  test("help-desk echo — does NOT bypass guard #3 when X-Original-Sender domain isn't help-desk pattern", () => {
+    // Generic group rewrite without a help-desk subdomain stays subject to
+    // guard #3 — internal-only To still fails. Prevents the help-desk
+    // bypass from over-resolving plain Google-Group internal CCs.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: "John Fulford <john@johnfulfordmusic.com>",
+      to: "business@emvn.co",
+    })] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          from: "John Fulford <john@johnfulfordmusic.com>",
+          to: "business@emvn.co",
+          date: "2026-04-30T17:37:00Z",
+        },
+        {
+          from: "Team Member <thanh@emvn.co>",
+          to: "EMVN Business <business@emvn.co>",
+          date: "2026-05-05T10:38:00Z",
+          x_original_sender: "thanh@emvn.co",
+          auto_submitted: "auto-generated",
+        },
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.guardFailures[0]!.guardNumber).toBe(3);
+  });
+
   test("cross-thread reply — Zendesk forked thread with auto-generated counts as reply (John Fulford pattern)", () => {
     // Zendesk creates a new threadId on every ticket response. The forked
     // thread's outbound to the customer has Auto-Submitted: auto-generated.
