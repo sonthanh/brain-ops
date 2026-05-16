@@ -130,7 +130,7 @@ export async function fetchSlaThreads(options: {
         userId: "me",
         id: msgId,
         format: "metadata",
-        metadataHeaders: ["From", "To", "Date", "Auto-Submitted"],
+        metadataHeaders: ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"],
       });
 
       const threadId = msg.data.threadId;
@@ -141,21 +141,26 @@ export async function fetchSlaThreads(options: {
         userId: "me",
         id: threadId,
         format: "metadata",
-        metadataHeaders: ["From", "To", "Date", "Auto-Submitted"],
+        metadataHeaders: ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"],
       });
 
       const threadMessages: SlaThreadMessage[] = [];
       for (const m of thread.data.messages || []) {
         const headers = m.payload?.headers || [];
         const header = (name: string): string =>
-          headers.find((h) => h.name === name)?.value || "";
+          headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
 
         const autoSubmittedRaw = header("Auto-Submitted");
+        const xOrigSender = header("X-Original-Sender");
+        const replyTo = header("Reply-To");
         threadMessages.push({
+          ...(m.id ? { message_id: m.id } : {}),
           from: header("From"),
           to: header("To"),
           date: header("Date"),
           auto_submitted: autoSubmittedRaw === "" ? null : autoSubmittedRaw,
+          x_original_sender: xOrigSender === "" ? null : xOrigSender,
+          reply_to: replyTo === "" ? null : replyTo,
         });
       }
 

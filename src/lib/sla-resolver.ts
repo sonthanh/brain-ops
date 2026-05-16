@@ -1,5 +1,5 @@
 import type { Identities } from "./identities.ts";
-import type { ReplyOwed, SlaThread } from "./types.ts";
+import type { ReplyOwed, SlaThread, SlaThreadMessage } from "./types.ts";
 
 export type SlaTier = "fast" | "normal" | "slow";
 export type SlaStatus = "breached" | "open";
@@ -517,6 +517,41 @@ export function extractAddress(raw: string): string {
   return tok.replace(/[<>]/g, "").toLowerCase();
 }
 
+/**
+ * Detect Google-Groups mailing-list-rewrite pattern. When an external sends to
+ * `legal@tunebot.io` (a Group), Gmail rewrites `From` to the group address and
+ * preserves the actual sender's display name with a `via <Group-Name>` wrapper:
+ *
+ *   "'Kerrie Fan' via Legal Tunebot" <legal@tunebot.io>
+ *
+ * Same path for team replies routed through groups (e.g. Zendesk `support@…`
+ * via `business@emvn.co`). Resolver MUST NOT treat the rewritten From as
+ * authoritative — the real sender lives in X-Original-Sender / Reply-To.
+ */
+function hasViaGroupRewrite(from: string): boolean {
+  const displayName = (from ?? "").split("<")[0] ?? "";
+  return /\bvia\b/i.test(displayName);
+}
+
+/**
+ * Resolve the actual sender address for a thread message, transparently
+ * unwrapping Google-Groups `via X` routing. Preference order:
+ *   1. `X-Original-Sender` header (set by Google Groups; the real sender)
+ *   2. `Reply-To` header (also stamped by groups; secondary signal)
+ *   3. `From` header (the rewritten group address; used as last resort)
+ *
+ * If From has NO `via X` wrapper, returns From directly — no rewrite to
+ * undo, and Reply-To on direct mail is the sender's own preference, not a
+ * group stamp.
+ */
+export function actualSenderAddress(msg: SlaThreadMessage): string {
+  if (hasViaGroupRewrite(msg.from)) {
+    if (msg.x_original_sender) return extractAddress(msg.x_original_sender);
+    if (msg.reply_to) return extractAddress(msg.reply_to);
+  }
+  return extractAddress(msg.from);
+}
+
 export function classifySender(
   address: string,
   identities: Identities,
@@ -665,14 +700,28 @@ function evaluateGuards(
       },
     };
   }
-  const externalAddr = extractAddress(row.from);
-
   // Walk thread messages in chronological order.
   const withMs = thread.thread_messages.map((m) => ({
     msg: m,
     ms: parseEmailDateMs(m.date),
   }));
   withMs.sort((a, b) => a.ms - b.ms);
+
+  // Determine the real external party for guard #3. When the SLA inbound was
+  // routed through a Google Group ("via X"), `row.from` is the rewritten group
+  // address (e.g. `legal@tunebot.io`) — the actual external is in the SLA
+  // message's X-Original-Sender / Reply-To headers. Match the SLA message by
+  // message_id when available; fall back to the chronological inbound (first
+  // message at or before received_at) for legacy threads without ids.
+  const slaMessage =
+    (row.messageId
+      ? withMs.find((x) => x.msg.message_id === row.messageId)?.msg
+      : undefined) ??
+    withMs.find((x) => Number.isFinite(x.ms) && x.ms <= receivedAtMs)?.msg ??
+    withMs[0]?.msg;
+  const externalAddr = slaMessage
+    ? actualSenderAddress(slaMessage)
+    : extractAddress(row.from);
 
   let latestCandidate: { date: string; from: string; to: string } | null = null;
   let anyAfter = false;
@@ -687,7 +736,12 @@ function evaluateGuards(
     anyAfter = true;
     latestCandidate = { date: msg.date, from: msg.from, to: msg.to };
 
-    const senderAddr = extractAddress(msg.from);
+    // Unwrap `via X` mailing-list rewrites — a team Zendesk reply forwarded
+    // through `business@emvn.co` shows From as the group; the real sender
+    // (`support@emvn.zendesk.com`) determines classification. Same for the
+    // external-via-group case: an external replying through a team group
+    // gets unmasked here so we don't mis-classify them as team.
+    const senderAddr = actualSenderAddress(msg);
     const senderClass = classifySender(senderAddr, identities);
     // Guard #2: reply sender is me OR team
     if (senderClass === "external") {
@@ -800,7 +854,10 @@ function detectReopen(
   withMs.sort((a, b) => a.ms - b.ms);
   for (const { msg, ms } of withMs) {
     if (!Number.isFinite(ms) || ms <= resolvedMs) continue;
-    const senderClass = classifySender(extractAddress(msg.from), identities);
+    // Unwrap `via X` group rewrites so we don't re-open a Resolved row when
+    // an external's follow-up routed through the team group looks like it
+    // came from the group itself.
+    const senderClass = classifySender(actualSenderAddress(msg), identities);
     if (senderClass === "external" && !isAutoReply(msg.auto_submitted)) {
       return {
         row: resolved,
@@ -1096,6 +1153,32 @@ export const BILLING_KNOWN =
 export const INVITATION_SUBJECT =
   /\bInterview\s+Invitation\b|^"?\s*(Re:\s+)?Invitation:/i;
 
+/**
+ * Mass-blast To-pattern. RFPs and similar broadcast asks frequently land with
+ * `To: undisclosed-recipients:;` (BCC fanout). These carry no obligation to
+ * answer individually — replying just adds noise. User confirmed 2026-05-16
+ * (Nikki Butler RFP case): a `To: undisclosed-recipients` row should never
+ * sit in the active ledger.
+ */
+export const MASS_BLAST_TO = /undisclosed[-\s]recipients/i;
+
+/**
+ * Portal-action / e-contract notification senders. These deliver work that
+ * requires action on a vendor portal (sign the contract, log into the
+ * registry, accept an obligation), NOT a reply to the email. The thread is
+ * functionally a notification — leaving it as an SLA item creates a fake
+ * breach that can never resolve via email.
+ *
+ * Added 2026-05-16:
+ *   - `econtract@efyvn.com` — EFY Vietnamese e-contract platform
+ *   - `notification@bbcincorp.com` — BBCIncorp annual-obligation portal alerts
+ *
+ * Extend with explicit `address@domain` matches only; broad `notification@`
+ * regex would over-match real partner notifications that DO need a reply.
+ */
+export const PORTAL_NOTIFICATION_KNOWN =
+  /^(econtract@efyvn\.com|notification@bbcincorp\.com)$/i;
+
 export interface ValidationDrop {
   row: SlaRow;
   reasons: string[];
@@ -1139,8 +1222,14 @@ export function validateSlaLedger(ledger: SlaLedger): ValidationResult {
     if (addr && BILLING_KNOWN.test(addr)) {
       reasons.push(`billing-known localpart (${addr})`);
     }
+    if (addr && PORTAL_NOTIFICATION_KNOWN.test(addr)) {
+      reasons.push(`portal-notification sender (${addr}) — action lives on vendor portal, not email`);
+    }
     if (INVITATION_SUBJECT.test(row.subject)) {
       reasons.push("invitation subject — awareness per taxonomy");
+    }
+    if (row.to && MASS_BLAST_TO.test(row.to)) {
+      reasons.push("mass-blast To (undisclosed-recipients) — no 1:1 reply obligation");
     }
     return reasons;
   }

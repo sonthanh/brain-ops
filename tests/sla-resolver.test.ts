@@ -78,14 +78,17 @@ function emptyLedger(): SlaLedger {
   };
 }
 
-function thread(messageId: string, msgs: Array<{ from: string; to: string; date: string; auto_submitted?: string | null }>): SlaThread {
+function thread(messageId: string, msgs: Array<{ from: string; to: string; date: string; auto_submitted?: string | null; x_original_sender?: string | null; reply_to?: string | null; message_id?: string }>): SlaThread {
   return {
     message_id: messageId,
     thread_messages: msgs.map((m) => ({
+      ...(m.message_id ? { message_id: m.message_id } : {}),
       from: m.from,
       to: m.to,
       date: m.date,
       auto_submitted: m.auto_submitted ?? null,
+      x_original_sender: m.x_original_sender ?? null,
+      reply_to: m.reply_to ?? null,
     })),
   };
 }
@@ -317,6 +320,160 @@ describe("resolveSlaLedger — 4-guard rule", () => {
       threads: [thread(MESSAGE_ID, [
         { from: EXTERNAL_ADDR, to: "business@emvn.co", date: "2026-04-18T13:15:00Z" },
         { from: "sonthanhdo2004@gmail.com", to: EXTERNAL_ADDR, date: "2026-04-22T12:00:00Z" },
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+  });
+
+  test("via-X group rewrite — team direct reply to external resolves (Kerrie ES filing case 2026-05-16)", () => {
+    // Production scenario: external (Kerrie Fan from notification@bbcincorp.com)
+    // sent to `legal@tunebot.io` Google Group. Gmail rewrote `From` on the SLA
+    // inbound to the group address. Team replied directly from `legal@tunebot.io`
+    // back to `notification@bbcincorp.com`. The OLD resolver pulled externalAddr
+    // from row.from (= rewritten group) and guard #3 failed because
+    // notification@bbcincorp.com isn't in To. The fix: pull externalAddr from
+    // the SLA message's X-Original-Sender / Reply-To (the real external).
+    const ledger = {
+      ...emptyLedger(),
+      breached: [breachedRow({
+        from: `"'Kerrie Fan' via Legal Tunebot" <legal@tunebot.io>`,
+        to: "legal@emvn.co, legal@tunebot.io",
+      })],
+    };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          from: `"'Kerrie Fan' via Legal Tunebot" <legal@tunebot.io>`,
+          to: "legal@emvn.co, legal@tunebot.io",
+          date: "2026-04-18T13:15:00Z",
+          x_original_sender: "notification@bbcincorp.com",
+          reply_to: "Kerrie Fan <notification@bbcincorp.com>",
+        },
+        {
+          from: "Tunebot Legal <legal@tunebot.io>",
+          to: "Kerrie Fan <notification@bbcincorp.com>",
+          date: "2026-04-22T08:00:00Z",
+        },
+      ])],
+      identities: { ...IDENTITIES, teamDomains: new Set([...IDENTITIES.teamDomains, "tunebot.io"]) },
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([MESSAGE_ID]);
+    expect(result.ledger.breached).toEqual([]);
+    expect(result.ledger.resolved).toHaveLength(1);
+  });
+
+  test("via-X group rewrite — external follow-up routed through team group is NOT a team reply", () => {
+    // Production scenario: external (George Kolganov from george@mediacube.io)
+    // sends 4 follow-ups all routed via `license@emvn.co` group. Naive
+    // resolver sees From = license@emvn.co (matches team domain) and would
+    // mis-classify the follow-ups as team replies. The X-Original-Sender
+    // unwrap reveals george@mediacube.io — still external — so guard #2
+    // correctly fails and the row stays breached.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: `"'George Kolganov' via Music Licensing" <license@emvn.co>`,
+      to: "license@emvn.co",
+    })] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          from: `"'George Kolganov' via Music Licensing" <license@emvn.co>`,
+          to: "license@emvn.co",
+          date: "2026-04-22T03:31:00Z",
+          x_original_sender: "george@mediacube.io",
+          reply_to: "George Kolganov <george@mediacube.io>",
+        },
+        {
+          from: `"'George Kolganov' via Music Licensing" <license@emvn.co>`,
+          to: "license@emvn.co",
+          date: "2026-04-26T23:31:00Z",
+          x_original_sender: "george@mediacube.io",
+          reply_to: "George Kolganov <george@mediacube.io>",
+        },
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.ledger.breached).toHaveLength(1);
+    expect(result.guardFailures).toHaveLength(1);
+    expect(result.guardFailures[0]!.guardNumber).toBe(2);
+  });
+
+  test("via-X group rewrite — internal-only Zendesk auto-routing does NOT resolve (John Fulford case)", () => {
+    // Production scenario: external sent to business@emvn.co. Team's Zendesk
+    // automation generated a ticket-acknowledgment routed through the same
+    // group address — To: EMVN Business <business@emvn.co> (internal only).
+    // X-Original-Sender: support@emvn.zendesk.com. The actual external never
+    // received this reply — guard #3 must fail because external isn't in To.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: "John Fulford <john@johnfulfordmusic.com>",
+      to: "business@emvn.co",
+    })] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          from: "John Fulford <john@johnfulfordmusic.com>",
+          to: "business@emvn.co",
+          date: "2026-04-18T13:15:00Z",
+        },
+        {
+          from: `"'License (EMVN Support)' via Business Development" <business@emvn.co>`,
+          to: "EMVN Business <business@emvn.co>",
+          date: "2026-04-22T10:38:00Z",
+          x_original_sender: "support@emvn.zendesk.com",
+          auto_submitted: "auto-generated",
+        },
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.ledger.breached).toHaveLength(1);
+    expect(result.guardFailures).toHaveLength(1);
+    // Fails on guard #2 (Zendesk subdomain not in teamDomains → external)
+    // OR guard #3 (To = internal group, external party not present) — either
+    // is correct behaviour. The point: do NOT resolve when the apparent
+    // team reply was actually addressed to an internal-only audience.
+    expect([2, 3]).toContain(result.guardFailures[0]!.guardNumber);
+  });
+
+  test("via-X group rewrite — match SLA message by message_id when present", () => {
+    // When thread has multiple messages with timestamps overlapping
+    // received_at (rare but possible with re-engagements), match by
+    // message_id to identify the SLA inbound deterministically.
+    const ledger = { ...emptyLedger(), breached: [breachedRow({
+      from: `"'Ext Sender' via Music Licensing" <license@emvn.co>`,
+      to: "license@emvn.co",
+    })] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          message_id: "old_resolved_msg",
+          from: `"'Ext Sender' via Music Licensing" <license@emvn.co>`,
+          to: "license@emvn.co",
+          date: "2026-04-10T08:00:00Z",
+          x_original_sender: "different@somewhere.com",
+        },
+        {
+          message_id: MESSAGE_ID,
+          from: `"'Ext Sender' via Music Licensing" <license@emvn.co>`,
+          to: "license@emvn.co",
+          date: "2026-04-18T13:15:00Z",
+          x_original_sender: "ext@somewhere.com",
+          reply_to: "Ext Sender <ext@somewhere.com>",
+        },
+        {
+          from: "thanh@emvn.co",
+          to: "ext@somewhere.com",
+          date: "2026-04-22T12:00:00Z",
+        },
       ])],
       identities: IDENTITIES,
       now: NOW,
@@ -826,6 +983,48 @@ describe("validateSlaLedger", () => {
     const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
     expect(result.drops).toEqual([]);
     expect(result.ledger.open).toHaveLength(1);
+  });
+
+  test("drops mass-blast row when To contains 'undisclosed-recipients' (Nikki Butler RFP case 2026-05-16)", () => {
+    const row = breachedRow({
+      from: "Nikki Butler <nikki@nikkibutlermedia.com>",
+      to: "undisclosed-recipients:;",
+      subject: '"Request for Proposals from Nikki Butler"',
+    });
+    const result = validateSlaLedger({ ...emptyLedger(), breached: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("mass-blast"))).toBe(true);
+    expect(result.ledger.breached).toEqual([]);
+  });
+
+  test("does NOT drop a normal 1:1 To (sanity check around undisclosed-recipients regex)", () => {
+    const row = openRow({ to: "Discreet Recipient <person@example.com>" });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toEqual([]);
+  });
+
+  test.each<[string, string]>([
+    ["econtract@efyvn.com", "EFY Vietnam e-contract platform"],
+    ["notification@bbcincorp.com", "BBCIncorp annual-obligation portal"],
+  ])("drops portal-notification sender from=%p (%s)", (addr, _label) => {
+    const row = openRow({ from: `Portal Notice <${addr}>` });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(result.drops).toHaveLength(1);
+    expect(result.drops[0]!.reasons.some((r) => r.includes("portal-notification"))).toBe(true);
+    expect(result.ledger.open).toEqual([]);
+  });
+
+  test("portal-notification regex stays narrow: only documented portal senders match", () => {
+    // The regex is `^(econtract@efyvn\.com|notification@bbcincorp\.com)$`.
+    // A look-alike sender at a different domain must not match — proving the
+    // pattern is anchored to the specific portals, not a substring sweep.
+    // (Note: `notification@` generic addresses are already caught by
+    // AUTOMATION_LP; this test specifically checks the PORTAL pattern.)
+    const row = openRow({ from: "Look-alike Portal <econtract@evil-not-efyvn.com>" });
+    const result = validateSlaLedger({ ...emptyLedger(), open: [row] });
+    expect(
+      result.drops[0]?.reasons.some((r) => r.includes("portal-notification")) ?? false,
+    ).toBe(false);
   });
 
   test("collects multiple reasons when a row violates several invariants", () => {

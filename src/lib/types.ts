@@ -123,6 +123,8 @@ export function parseDraftRequests(raw: unknown): DraftRequest[] {
 }
 
 export interface SlaThreadMessage {
+  /** Gmail message id (`messages.get` `.id`). Optional for backwards compat with older fixtures. */
+  message_id?: string;
   from: string;
   to: string;
   date: string;
@@ -134,6 +136,26 @@ export interface SlaThreadMessage {
    * only values that disqualify a reply. See commands/gmail-triage.md §8 step 7d.
    */
   auto_submitted: string | null;
+  /**
+   * `X-Original-Sender` header. Google Groups (mailing-list forwarders like
+   * `legal@tunebot.io`, `license@emvn.co`, `business@emvn.co`) rewrite the
+   * `From` header to the group address and stash the actual sender here. Used
+   * by guards #2/#3 to recover the real party so that:
+   *   (a) external partners routed through a team group aren't mis-classified
+   *       as team replies (`From: legal@tunebot.io` looks like team, but
+   *       `X-Original-Sender: notification@bbcincorp.com` is the real ask), and
+   *   (b) team replies addressed to the partner's real address (e.g.
+   *       `To: notification@bbcincorp.com`) pass guard #3 even though the
+   *       inbound SLA row stored `From` as the rewritten group address.
+   * Null when header absent (direct 1:1 mail, no group routing).
+   */
+  x_original_sender: string | null;
+  /**
+   * `Reply-To` header. Used as a second-choice signal when X-Original-Sender
+   * is absent — Google Groups also stamps Reply-To with the original sender
+   * address. Null when header absent or empty.
+   */
+  reply_to: string | null;
 }
 
 export interface SlaThread {
