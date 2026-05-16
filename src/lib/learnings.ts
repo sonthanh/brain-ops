@@ -6,7 +6,17 @@ export type LearningType =
   | "sent-as-is"
   | "sent-edited"
   | "team-handled"
-  | "stale";
+  | "stale"
+  /**
+   * SLA false positive captured retroactively: a row the resolver could not
+   * close via guard evidence, that the user manually moved to `## Resolved`
+   * (or routed to `## Auto-suppressed`) with a `user-asserted ...` note.
+   * Each entry tells the next classify run that this thread / sender pattern
+   * should be skipped from SLA tracking up-front. Emitted by sla-refresh; the
+   * classifier loads the file each pre-classify run. See ai-brain /audit
+   * 2026-05-16 finding B (P5 cause-layer: stop re-asking the same threads).
+   */
+  | "sla-false-positive";
 
 export interface LearningEntry {
   type: LearningType;
@@ -17,6 +27,15 @@ export interface LearningEntry {
   responder?: string;
   draftBodyExcerpt?: string;
   sentBodyExcerpt?: string;
+  /**
+   * Verbatim audit reason copied from the ledger cell that anchored the
+   * false-positive judgement — `resolvedBy` for Resolved rows,
+   * `replyReason` (cells[12]) for Auto-suppressed rows. Surfaced so the
+   * classifier prompt can extract the pattern (`team-handled out-of-band`,
+   * `Zendesk auto-generated echo`, etc.) without re-reading the ledger.
+   * Present only for `sla-false-positive`; absent on lifecycle types.
+   */
+  reason?: string;
 }
 
 const MAX_BYTES = 8192;
@@ -67,4 +86,35 @@ export function appendLearning(path: string, entry: LearningEntry): void {
   }
 
   writeFileSync(path, output, "utf-8");
+}
+
+/**
+ * Append-if-absent variant. Skips writing when an entry with the same
+ * `threadId` AND `type` already exists in the file. Returns `true` when the
+ * entry was appended, `false` when a duplicate suppressed the write.
+ *
+ * Used by sla-refresh to emit `sla-false-positive` events idempotently across
+ * runs. The classifier reads each run and would otherwise see the same row
+ * re-emitted every refresh tick — the 8KB cap is non-negotiable, dedup is the
+ * cap-protection for high-frequency event types.
+ */
+export function appendLearningIfAbsent(
+  path: string,
+  entry: LearningEntry,
+): boolean {
+  if (existsSync(path)) {
+    const lines = splitFile(readFileSync(path, "utf-8"));
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line) as Partial<LearningEntry>;
+        if (parsed.threadId === entry.threadId && parsed.type === entry.type) {
+          return false;
+        }
+      } catch {
+        // skip malformed lines (forward-compatible with future field tweaks)
+      }
+    }
+  }
+  appendLearning(path, entry);
+  return true;
 }

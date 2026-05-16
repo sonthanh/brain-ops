@@ -85,6 +85,7 @@ describe("sla-refresh CLI — end-to-end", () => {
       credentialsPath: undefined,
       threadsPath,
       dryRun: false,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
     const updated = readFileSync(ledgerPath, "utf-8");
@@ -108,6 +109,7 @@ describe("sla-refresh CLI — end-to-end", () => {
       credentialsPath: undefined,
       threadsPath,
       dryRun: false,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
     const updated = readFileSync(ledgerPath, "utf-8");
@@ -125,6 +127,7 @@ describe("sla-refresh CLI — end-to-end", () => {
       credentialsPath: undefined,
       threadsPath,
       dryRun: true,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
     const after = readFileSync(ledgerPath, "utf-8");
@@ -140,6 +143,7 @@ describe("sla-refresh CLI — end-to-end", () => {
       credentialsPath: undefined,
       threadsPath,
       dryRun: false,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
   });
@@ -162,6 +166,7 @@ describe("sla-refresh CLI — end-to-end", () => {
       credentialsPath: undefined,
       threadsPath,
       dryRun: false,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
     const updated = readFileSync(ledgerPath, "utf-8");
@@ -211,6 +216,7 @@ Open: 2 | Breached: 2 (fast: 0, normal: 2, slow: 0)
       credentialsPath: undefined,
       threadsPath,
       dryRun: false,
+      classifyLearningsPath: undefined,
     });
     expect(code).toBe(0);
     const updated = readFileSync(ledgerPath, "utf-8");
@@ -231,4 +237,249 @@ Open: 2 | Breached: 2 (fast: 0, normal: 2, slow: 0)
     expect(updated).toContain("billing-known");
     expect(updated).toContain("automation-sender");
   });
+});
+
+/**
+ * SLA false-positive learning capture (/audit 2026-05-16 finding B).
+ *
+ * When the user manually moves a row from `## Breached` to `## Resolved` with a
+ * `user-asserted ...` audit note, the resolver has no thread evidence to act
+ * on — the only signal that the row was a false positive is the user's note.
+ * sla-refresh re-reads the post-edit ledger, detects matching `resolvedBy` /
+ * `replyReason` strings, and emits a deduped `sla-false-positive` learning
+ * entry. The classifier loads this file pre-classify so the same thread (or
+ * matching sender / subject pattern) doesn't re-enter `Breached` next month.
+ */
+describe("sla-refresh CLI — SLA false-positive learning capture", () => {
+  let rulesPath: string;
+  let ledgerPath: string;
+  let threadsPath: string;
+  let learningsPath: string;
+
+  // Ledger fixture variant: a single Resolved row already carries a
+  // `user-asserted team-handled out-of-band` audit note (mirrors the actual
+  // post-edit state of business/intelligence/emails/sla-open.md after the
+  // user manually moved a false positive). Active sections are empty so the
+  // resolver does nothing destructive — keeps the test focused on the
+  // capture path alone.
+  const LEDGER_WITH_USER_ASSERTED_RESOLVED = `---
+title: SLA Open Items
+created: 2026-04-15
+updated: 2026-05-16 11:30 UTC
+tags: [emails, sla, ledger]
+zone: business
+---
+
+# SLA Open Items
+
+Last computed: 2026-05-16 11:30 UTC
+Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+| normal | license | George Kolganov <via license@emvn.co> | "Relaxed Mind & Mediacube" | msg_user_asserted_1 | 2026-05-12 03:31 | 2026-05-16 11:30 UTC | user-asserted team-handled out-of-band 2026-05-16 (no Gmail trace) |
+`;
+
+  // Same shape but the Resolved row was closed by a real team reply — the
+  // `resolvedBy` cell carries the team email address, not `user-asserted`.
+  // The capture path must skip this row entirely (negative-fire test).
+  const LEDGER_WITH_REAL_TEAM_RESOLVED = `---
+title: SLA Open Items
+created: 2026-04-15
+updated: 2026-05-16 11:30 UTC
+tags: [emails, sla, ledger]
+zone: business
+---
+
+# SLA Open Items
+
+Last computed: 2026-05-16 11:30 UTC
+Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+| normal | support | Ed Scott <ed@dabmusic.tv> | "Re: New Music — Dodged A Bullet" | msg_team_replied_1 | 2026-05-12 09:57 | 2026-05-16 10:27 UTC | accounting@emvn.co |
+`;
+
+  // Ledger fixture with a single Auto-suppressed row carrying a
+  // `user-asserted ...` reply_reason (cells[12]). Mirrors the case where the
+  // user routes a mass-blast / portal-notification false positive to the
+  // suppressed bucket rather than Resolved.
+  const LEDGER_WITH_USER_ASSERTED_SUPPRESSED = `---
+title: SLA Open Items
+created: 2026-04-15
+updated: 2026-05-16 11:30 UTC
+tags: [emails, sla, ledger]
+zone: business
+---
+
+# SLA Open Items
+
+Last computed: 2026-05-16 11:30 UTC
+Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
+
+## Breached
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Overdue | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|---------|--------|----------|
+
+## Open (within SLA)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Remaining | Status | Category |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----------|--------|----------|
+
+## Auto-suppressed (Reply Owed = false)
+| Tier | Owner | From | To | Subject | Message ID | Received (UTC) | Breach At (UTC) | Age | Status | Category | Reply Owed | Reply Reason |
+|------|-------|------|----|---------|------------|----------------|-----------------|-----|--------|----------|------------|--------------|
+| normal | business | Nikki Butler <nikki@example.com> | business@emvn.co | "Mass-blast outreach" | msg_user_asserted_supp | 2026-05-10 14:00 | 2026-05-12 14:00 | ~6d | 🔇 suppressed | awareness | false | user-asserted mass-blast not a real ask 2026-05-16 |
+
+## Resolved (last 7 days, audit trail)
+| Tier | Owner | From | Subject | Message ID | Received | Resolved (UTC) | Resolved by |
+|------|-------|------|---------|------------|----------|----------------|-------------|
+`;
+
+  function loadLearningEntries(): Array<Record<string, unknown>> {
+    const content = readFileSync(learningsPath, "utf-8");
+    const sep = "\n---\n";
+    const idx = content.indexOf(sep);
+    if (idx < 0) return [];
+    return content
+      .slice(idx + sep.length)
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  }
+
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    rulesPath = join(TEST_DIR, "gmail-rules.md");
+    ledgerPath = join(TEST_DIR, "sla-open.md");
+    threadsPath = join(TEST_DIR, "sla-threads.json");
+    learningsPath = join(TEST_DIR, "gmail-classify-learnings.md");
+    writeFileSync(rulesPath, RULES_FIXTURE);
+    writeFileSync(threadsPath, EMPTY_THREADS);
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  test("Resolved row with user-asserted note emits an sla-false-positive learning entry", async () => {
+    writeFileSync(ledgerPath, LEDGER_WITH_USER_ASSERTED_RESOLVED);
+    const code = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+      classifyLearningsPath: learningsPath,
+    });
+    expect(code).toBe(0);
+    const entries = loadLearningEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.type).toBe("sla-false-positive");
+    expect(entries[0]?.threadId).toBe("msg_user_asserted_1");
+    expect(entries[0]?.subject).toContain("Relaxed Mind");
+    expect(entries[0]?.sender).toContain("George Kolganov");
+    expect(String(entries[0]?.reason)).toContain("user-asserted");
+    expect(String(entries[0]?.reason)).toContain("team-handled out-of-band");
+    expect(typeof entries[0]?.observedAt).toBe("string");
+  });
+
+  test("running refresh twice on the same ledger keeps exactly one learning entry (dedup by threadId)", async () => {
+    writeFileSync(ledgerPath, LEDGER_WITH_USER_ASSERTED_RESOLVED);
+    const firstCode = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+      classifyLearningsPath: learningsPath,
+    });
+    expect(firstCode).toBe(0);
+    expect(loadLearningEntries()).toHaveLength(1);
+
+    // Second run — same ledger state, same user-asserted row. The capture
+    // pass MUST see the existing entry and skip the append.
+    const secondCode = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+      classifyLearningsPath: learningsPath,
+    });
+    expect(secondCode).toBe(0);
+    const entries = loadLearningEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.threadId).toBe("msg_user_asserted_1");
+  });
+
+  test("Resolved row with a real team-email resolvedBy emits NO learning entry", async () => {
+    writeFileSync(ledgerPath, LEDGER_WITH_REAL_TEAM_RESOLVED);
+    const code = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+      classifyLearningsPath: learningsPath,
+    });
+    expect(code).toBe(0);
+    // Capture path must not have created the learnings file (no rows match).
+    const entries = existsSyncOrEmpty(learningsPath);
+    expect(entries).toHaveLength(0);
+  });
+
+  test("Auto-suppressed row with user-asserted reply_reason emits an sla-false-positive learning entry", async () => {
+    writeFileSync(ledgerPath, LEDGER_WITH_USER_ASSERTED_SUPPRESSED);
+    const code = await runRefresh({
+      ledgerPath,
+      gmailRulesPath: rulesPath,
+      credentialsPath: undefined,
+      threadsPath,
+      dryRun: false,
+      classifyLearningsPath: learningsPath,
+    });
+    expect(code).toBe(0);
+    const entries = loadLearningEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.type).toBe("sla-false-positive");
+    expect(entries[0]?.threadId).toBe("msg_user_asserted_supp");
+    expect(String(entries[0]?.reason)).toContain("user-asserted");
+    expect(String(entries[0]?.reason)).toContain("mass-blast");
+  });
+
+  function existsSyncOrEmpty(p: string): Array<Record<string, unknown>> {
+    try {
+      const content = readFileSync(p, "utf-8");
+      const sep = "\n---\n";
+      const idx = content.indexOf(sep);
+      if (idx < 0) return [];
+      return content
+        .slice(idx + sep.length)
+        .split("\n")
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+    } catch {
+      return [];
+    }
+  }
 });
