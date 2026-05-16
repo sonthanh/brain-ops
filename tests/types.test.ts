@@ -31,6 +31,23 @@ describe("parseTriageActions", () => {
     ).toThrow('invalid action "bogus"');
   });
 
+  test.each<string>(["skip", "SKIP", "none", "noop", "no-op", "ignore"])(
+    "silently drops no-op action %p instead of throwing (LLM-drift safety net)",
+    (act) => {
+      // 2026-05-16 run #25960755878 incident: classifier emitted action="skip"
+      // → parser threw → gmail-clean step failed → commit step skipped →
+      // SLA refresh from earlier in the workflow never reached main.
+      // Silent-drop these specific no-op synonyms so a single stray LLM
+      // token can't take down the whole pipeline.
+      const result = parseTriageActions([
+        { action: act, id: "1", from: "a@test.com", subject: "s" },
+        { action: "archive", id: "2", from: "b@test.com", subject: "real" },
+      ]);
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe("2");
+    },
+  );
+
   test("throws on missing id", () => {
     expect(() =>
       parseTriageActions([{ action: "archive", from: "a", subject: "s" }]),

@@ -62,11 +62,23 @@ function isTaxonomyView(v: unknown): v is TaxonomyView {
   return typeof v === "string" && VALID_VIEWS.has(v as TaxonomyView);
 }
 
+/**
+ * Action types the classifier sometimes emits as a synonym for "do nothing"
+ * — silently dropped instead of erroring. Without this, a stray LLM-emitted
+ * `"skip"` (or similar) crashes `gmail-clean`, which crashes the whole
+ * `gmail-triage` workflow, which skips the downstream commit step — and the
+ * SLA-ledger refresh run earlier in the same workflow never makes it to main.
+ * See 2026-05-16 run #25960755878 incident.
+ */
+const SILENT_DROP_ACTIONS = new Set(["skip", "none", "noop", "no-op", "ignore"]);
+
 export function parseTriageActions(raw: unknown): TriageAction[] {
   if (!Array.isArray(raw)) {
     throw new Error("Expected array of triage actions");
   }
-  return raw.map((item, i) => {
+  const out: TriageAction[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
     if (!item || typeof item !== "object") {
       throw new Error(`Action [${i}]: expected object`);
     }
@@ -75,10 +87,14 @@ export function parseTriageActions(raw: unknown): TriageAction[] {
       user_category, team_view, user_view,
     } = item as Record<string, unknown>;
     if (typeof id !== "string" || !id) throw new Error(`Action [${i}]: missing id`);
+    if (typeof action === "string" && SILENT_DROP_ACTIONS.has(action.toLowerCase())) {
+      console.warn(`[parseTriageActions] dropping no-op action "${action}" for id=${id} (LLM emitted unhandled action type)`);
+      continue;
+    }
     if (!isValidAction(action)) throw new Error(`Action [${i}]: invalid action "${action}"`);
     if (typeof from !== "string") throw new Error(`Action [${i}]: missing from`);
     if (typeof subject !== "string") throw new Error(`Action [${i}]: missing subject`);
-    return {
+    out.push({
       action,
       id,
       from,
@@ -87,8 +103,9 @@ export function parseTriageActions(raw: unknown): TriageAction[] {
       ...(isUserCategory(user_category) ? { user_category } : {}),
       ...(isTaxonomyView(team_view) ? { team_view } : {}),
       ...(isTaxonomyView(user_view) ? { user_view } : {}),
-    };
-  });
+    });
+  }
+  return out;
 }
 
 export interface DraftRequest {
