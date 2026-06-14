@@ -32,7 +32,7 @@ import { execSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { parseEtimeToMinutes } from "./reap-orca-sessions.ts";
+import { ORCA_BIN, parseEtimeToMinutes } from "./reap-orca-sessions.ts";
 
 const HOME = homedir();
 const REAPER_LOG = process.env.REAP_LOG ?? `${HOME}/.local/state/reap-orca-sessions/cron.log`;
@@ -205,7 +205,7 @@ type Unhealthy = { name: string; status: string; kind: string };
  * than falsely reporting "all healthy".
  */
 function unhealthyAutomationRuns(nowMs: number, windowMs: number, graceMs: number): Unhealthy[] | null {
-  const listed = orcaJson(`orca automations list --json`) as {
+  const listed = orcaJson(`${ORCA_BIN} automations list --json`) as {
     result?: { automations?: { id: string; name: string; enabled: boolean }[] };
   } | null;
   const automations = listed?.result?.automations;
@@ -214,7 +214,7 @@ function unhealthyAutomationRuns(nowMs: number, windowMs: number, graceMs: numbe
   const unhealthy: Unhealthy[] = [];
   for (const a of automations) {
     if (!a.enabled) continue;
-    const runsResp = orcaJson(`orca automations runs --id ${a.id} --json`) as {
+    const runsResp = orcaJson(`${ORCA_BIN} automations runs --id ${a.id} --json`) as {
       result?: { runs?: { status: string; scheduledFor: number }[] };
     } | null;
     const inWindow = (runsResp?.result?.runs ?? [])

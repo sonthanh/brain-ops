@@ -29,9 +29,27 @@
 // Scheduled every 30 min via launchd com.brain.reap-orca-sessions.
 
 import { execSync } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+
+/**
+ * Absolute path to the `orca` CLI. Resolved once so this works under launchd, whose default
+ * PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) excludes `/usr/local/bin` where orca lives — a bare
+ * `orca` would silently no-op there. Same trap as the `sp` absolute-path rule in CLAUDE.md.
+ * Shared by monitor-orca-sessions.ts.
+ */
+export const ORCA_BIN = ((): string => {
+  for (const p of [
+    process.env.ORCA_BIN,
+    "/usr/local/bin/orca",
+    "/opt/homebrew/bin/orca",
+    "/Applications/Orca.app/Contents/Resources/bin/orca",
+  ]) {
+    if (p && existsSync(p)) return p;
+  }
+  return "orca"; // last resort: rely on PATH
+})();
 
 const AGE_MINUTES = Number(process.env.REAP_AGE_MINUTES ?? 90);
 const IDLE_SAMPLE_SECONDS = Number(process.env.REAP_IDLE_SAMPLE_SECONDS ?? 2);
@@ -142,7 +160,7 @@ export function main(): void {
         reaped++;
         continue;
       }
-      if (handle) sh(`orca terminal close --terminal ${handle}`);
+      if (handle) sh(`${ORCA_BIN} terminal close --terminal ${handle}`);
       sh(`kill -KILL ${c.pid} 2>/dev/null`); // fallback: ensure the process is gone
       log(
         `reaped pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m idle handle=${handle ?? "none"} :: ${snippet}`,
