@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifyRun,
   countReapsInWindow,
   decideAlerts,
   parseLogTimestamp,
 } from "./monitor-orca-sessions.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
 
 describe("parseLogTimestamp", () => {
   test("parses leading ISO bracket", () => {
@@ -35,12 +37,40 @@ describe("countReapsInWindow", () => {
   });
 });
 
+describe("classifyRun", () => {
+  const now = Date.parse("2026-06-14T12:00:00Z");
+  const grace = 3 * HOUR;
+
+  test("completed/succeeded/skipped are healthy regardless of age", () => {
+    expect(classifyRun("completed", now - 10 * HOUR, now, grace)).toBe("healthy");
+    expect(classifyRun("succeeded", now - 10 * HOUR, now, grace)).toBe("healthy");
+    expect(classifyRun("skipped", now - 10 * HOUR, now, grace)).toBe("healthy");
+  });
+  test("dispatch_failed/failed/errored/timeouts/cancels are failures", () => {
+    for (const s of [
+      "dispatch_failed",
+      "failed",
+      "errored",
+      "timed_out",
+      "cancelled",
+      "aborted",
+    ]) {
+      expect(classifyRun(s, now - HOUR, now, grace)).toBe("failed");
+    }
+  });
+  test("non-terminal within grace is in-progress, past grace is stuck", () => {
+    expect(classifyRun("dispatched", now - HOUR, now, grace)).toBe("in-progress");
+    expect(classifyRun("running", now - HOUR, now, grace)).toBe("in-progress");
+    expect(classifyRun("dispatched", now - 5 * HOUR, now, grace)).toBe("stuck");
+    expect(classifyRun("dispatching", now - 5 * HOUR, now, grace)).toBe("stuck");
+  });
+});
+
 describe("decideAlerts", () => {
   const base = {
-    reaps24h: 0,
+    unhealthyRuns: [] as { name: string; status: string; kind: string }[],
     liveStuck: 0,
     reaperAgeMin: 10,
-    reapThreshold: 3,
     liveThreshold: 6,
     reaperStaleMin: 90,
   };
@@ -48,10 +78,19 @@ describe("decideAlerts", () => {
   test("healthy -> no alerts", () => {
     expect(decideAlerts(base)).toEqual([]);
   });
-  test("recurring stuck runs -> alert", () => {
-    const r = decideAlerts({ ...base, reaps24h: 3 });
+  test("benign teardowns alone never alert (the core false-positive fix)", () => {
+    // No unhealthy runs even if many sessions were reaped — reaping a completed
+    // session is normal teardown, not a stall.
+    expect(decideAlerts({ ...base, unhealthyRuns: [] })).toEqual([]);
+  });
+  test("failed automation run -> alert naming the automation", () => {
+    const r = decideAlerts({
+      ...base,
+      unhealthyRuns: [{ name: "Issue triage", status: "dispatch_failed", kind: "failed" }],
+    });
     expect(r.length).toBe(1);
-    expect(r[0]).toContain("Recurring");
+    expect(r[0]).toContain("Issue triage");
+    expect(r[0]).toContain("dispatch_failed");
   });
   test("accumulation -> alert", () => {
     const r = decideAlerts({ ...base, liveStuck: 6 });
@@ -64,6 +103,13 @@ describe("decideAlerts", () => {
     expect(decideAlerts({ ...base, reaperAgeMin: null })[0]).toContain("Reaper DOWN");
   });
   test("multiple conditions stack", () => {
-    expect(decideAlerts({ ...base, reaperAgeMin: null, reaps24h: 5, liveStuck: 9 }).length).toBe(3);
+    expect(
+      decideAlerts({
+        ...base,
+        reaperAgeMin: null,
+        unhealthyRuns: [{ name: "Geo improve", status: "dispatch_failed", kind: "failed" }],
+        liveStuck: 9,
+      }).length,
+    ).toBe(3);
   });
 });

@@ -1,19 +1,29 @@
 #!/usr/bin/env -S bun run
-// reap-orca-sessions.ts — janitor for stuck Orca automation sessions.
+// reap-orca-sessions.ts — de-facto teardown for Orca automation sessions.
 //
-// Root cause it fixes: Orca scheduled automations launch *interactive* `claude /goal …`
-// sessions. A run that completes normally exits, but a run that gets STUCK (waiting on
-// input, an error, a rate-limit, a HITL prompt) idles forever as a live `claude` process
-// holding ~250 MB. Over a multi-day uptime these pile up and exhaust swap (observed: ~40
-// sessions / ~10 GB on 2026-06-14, which slowed the whole machine).
+// Root cause it works around: Orca launches automations as INTERACTIVE `claude <prompt>`
+// TUIs (tui-agent-config: launchCmd 'claude', argv prompt injection). An interactive claude
+// does NOT self-exit after its final turn — it returns to the REPL and waits for stdin that
+// never comes. Orca marks the run `completed` and snapshots the output, but leaves the idle
+// ~250 MB process alive. So this is NOT "successful runs exit, only stuck ones linger" —
+// EVERY completed run leaks an idle REPL (verified 2026-06-14: a completed run idled ~104 min
+// until reaped; a trivial test run was `completed` in 7 s yet still alive at 93 s). Orca has
+// no built-in teardown of completed terminals, so this reaper IS that teardown. Without it,
+// idle REPLs pile up (observed ~40 sessions / ~10 GB on 2026-06-14, slowing the machine and
+// — likely — starving new automation launches into `dispatch_failed`).
 //
 // This reaps any `claude /goal …` process that is BOTH (a) older than REAP_AGE_MINUTES
 // (default 90) AND (b) idle right now (no measurable CPU over a 2 s sample). The idle gate
-// means a slow-but-still-working run is never killed — only genuinely stuck sessions are.
-// It asks Orca to close the tab (kills the PTY), then hard-kills as a fallback.
+// means a slow-but-still-working run is never killed. It asks Orca to close the tab (kills
+// the PTY), then hard-kills as a fallback. Reaping a completed-and-idle session is normal
+// teardown, not a failure — `monitor-orca-sessions.ts` keys its health alerts off Orca's
+// run status, not off how many sessions this reaper cleaned up.
 //
 // It is deliberately narrow: it ONLY matches automation sessions (`claude /goal`), NEVER
-// real interactive user sessions (`claude --plugin-dir …`) or anything else.
+// real interactive user sessions (`claude --plugin-dir …`) or anything else. KNOWN GAP: a
+// non-`/goal` automation prompt (e.g. "Weekly issue-backlog cleanup") leaks the same way but
+// isn't matched — broadening the matcher risks killing the user's own interactive `claude`,
+// so it's left narrow until those become common.
 //
 // Run: bun run reap-orca-sessions.ts [--dry-run]
 // Scheduled every 30 min via launchd com.brain.reap-orca-sessions.
