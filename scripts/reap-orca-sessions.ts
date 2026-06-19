@@ -12,18 +12,31 @@
 // idle REPLs pile up (observed ~40 sessions / ~10 GB on 2026-06-14, slowing the machine and
 // — likely — starving new automation launches into `dispatch_failed`).
 //
-// This reaps any `claude /goal …` process that is BOTH (a) older than REAP_AGE_MINUTES
-// (default 90) AND (b) idle right now (no measurable CPU over a 2 s sample). The idle gate
-// means a slow-but-still-working run is never killed. It asks Orca to close the tab (kills
-// the PTY), then hard-kills as a fallback. Reaping a completed-and-idle session is normal
-// teardown, not a failure — `monitor-orca-sessions.ts` keys its health alerts off Orca's
-// run status, not off how many sessions this reaper cleaned up.
+// This reaps any `claude /goal …` process older than REAP_AGE_MINUTES (default 180). It asks
+// Orca to close the tab (kills the PTY), then hard-kills as a fallback. Reaping a completed
+// session is normal teardown, not a failure — `monitor-orca-sessions.ts` keys its health
+// alerts off Orca's run status, not off how many sessions this reaper cleaned up.
+//
+// WHY age-only, not a CPU idle gate (the 2026-06-19 fix): the old gate skipped any session
+// burning ≥0.05 s CPU over a 2 s sample, assuming a finished run is ~0 % CPU. FALSE — an idle
+// Claude Code TUI sits at ~10 % CPU forever (render loop, spinner, watchers), the SAME as a
+// working agent between turns. So CPU cannot distinguish done-from-working; the gate returned
+// "still active" on EVERY completed REPL and never reaped them. Real failure: a completed
+// `/vault-lint` session idled 3.75 DAYS (pid 1443), logging "skip … still active (+0.17s CPU)"
+// on every 30-min tick while holding `caffeinate` and blocking system sleep. No reliable proxy
+// for "agent is done" exists at the process level (lastOutputAt redraws too, run-status doesn't
+// map cleanly to a live PID), so we use the one unambiguous signal: age. Orca automations are
+// batch jobs that finish in seconds–60 min (the longest, /geo-digest, < ~90 min), so a `/goal`
+// REPL past 180 min is, overwhelmingly, a completed-and-idle leak. A rare false-kill of a
+// genuinely long run is cheap and self-correcting: Orca marks it incomplete, the monitor
+// alerts, and it re-runs next schedule — far cheaper than the chronic multi-day leak.
 //
 // It is deliberately narrow: it ONLY matches automation sessions (`claude /goal`), NEVER
-// real interactive user sessions (`claude --plugin-dir …`) or anything else. KNOWN GAP: a
-// non-`/goal` automation prompt (e.g. "Weekly issue-backlog cleanup") leaks the same way but
-// isn't matched — broadening the matcher risks killing the user's own interactive `claude`,
-// so it's left narrow until those become common.
+// real interactive user sessions (`claude --plugin-dir …`) or anything else. Verified
+// 2026-06-19: every enabled Orca automation prompt begins with `/goal`, so the matcher covers
+// them all today. KNOWN GAP: a future non-`/goal` automation prompt would leak the same way
+// but isn't matched — broadening the matcher risks killing the user's own interactive
+// `claude`, so it's left narrow until such prompts actually exist.
 //
 // Run: bun run reap-orca-sessions.ts [--dry-run]
 // Scheduled every 30 min via launchd com.brain.reap-orca-sessions.
@@ -51,8 +64,7 @@ export const ORCA_BIN = ((): string => {
   return "orca"; // last resort: rely on PATH
 })();
 
-const AGE_MINUTES = Number(process.env.REAP_AGE_MINUTES ?? 90);
-const IDLE_SAMPLE_SECONDS = Number(process.env.REAP_IDLE_SAMPLE_SECONDS ?? 2);
+const AGE_MINUTES = Number(process.env.REAP_AGE_MINUTES ?? 180);
 const DRY_RUN = process.argv.includes("--dry-run");
 const LOG_FILE =
   process.env.REAP_LOG ?? `${homedir()}/.local/state/reap-orca-sessions/cron.log`;
@@ -80,7 +92,7 @@ export function parseEtimeToMinutes(etime: string): number {
 /**
  * True only for an Orca automation session (`claude /goal …`) older than the threshold.
  * Hard-excludes real user sessions (`claude --plugin-dir …`) as a defensive double-check.
- * (Idle-detection is applied separately, in main, before actually reaping.)
+ * Age is the sole liveness signal — see the header note on why a CPU idle gate was removed.
  */
 export function isReapable(
   command: string,
@@ -111,9 +123,32 @@ function log(msg: string): void {
   console.log(msg);
 }
 
-/** Cumulative CPU seconds consumed by a pid (from `ps -o time=`). */
-function cpuSecondsForPid(pid: number): number {
-  return parseEtimeToMinutes(sh(`ps -o time= -p ${pid}`)) * 60;
+/** A live Orca automation session selected for reaping. */
+export interface ReapCandidate {
+  pid: number;
+  etimeMinutes: number;
+  command: string;
+}
+
+/**
+ * Parse `ps -Awwo pid=,etime=,command=` output and return the reapable `claude /goal`
+ * sessions (older than the threshold, excluding interactive user sessions). Pure, so the
+ * reaping decision — the exact thing the old CPU gate got wrong — is unit-testable.
+ */
+export function selectReapable(
+  psOutput: string,
+  thresholdMinutes: number,
+): ReapCandidate[] {
+  const out: ReapCandidate[] = [];
+  for (const line of psOutput.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
+    if (!m) continue;
+    const command = m[3];
+    const etimeMinutes = parseEtimeToMinutes(m[2]);
+    if (!isReapable(command, etimeMinutes, thresholdMinutes)) continue;
+    out.push({ pid: Number(m[1]), etimeMinutes, command });
+  }
+  return out;
 }
 
 /** Read ORCA_TERMINAL_HANDLE from a process's environment, if present. */
@@ -124,53 +159,32 @@ function terminalHandleForPid(pid: number): string | null {
 
 export function main(): void {
   const out = sh(`ps -Awwo pid=,etime=,command=`);
-  type Cand = { pid: number; etimeMinutes: number; command: string; cpu0: number };
-  const candidates: Cand[] = [];
-  let scanned = 0;
-
-  for (const line of out.split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
-    if (!m) continue;
-    const command = m[3];
-    if (!/(^|\/)claude\s+\/goal/.test(command)) continue;
-    scanned++;
-    const pid = Number(m[1]);
-    const etimeMinutes = parseEtimeToMinutes(m[2]);
-    if (!isReapable(command, etimeMinutes, AGE_MINUTES)) continue;
-    candidates.push({ pid, etimeMinutes, command, cpu0: cpuSecondsForPid(pid) });
-  }
+  const liveGoal = out
+    .split("\n")
+    .filter((l) => /(^|\/)claude\s+\/goal/.test(l)).length;
+  const candidates = selectReapable(out, AGE_MINUTES);
 
   let reaped = 0;
-  if (candidates.length > 0) {
-    sh(`sleep ${IDLE_SAMPLE_SECONDS}`); // measure CPU movement over the interval
-    for (const c of candidates) {
-      const movedCpu = cpuSecondsForPid(c.pid) - c.cpu0;
-      const snippet = c.command.replace(/\s+/g, " ").slice(0, 90);
-      if (movedCpu >= 0.05) {
-        log(
-          `skip pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m — still active (+${movedCpu.toFixed(2)}s CPU) :: ${snippet}`,
-        );
-        continue;
-      }
-      const handle = terminalHandleForPid(c.pid);
-      if (DRY_RUN) {
-        log(
-          `DRY-RUN would reap pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m idle handle=${handle ?? "none"} :: ${snippet}`,
-        );
-        reaped++;
-        continue;
-      }
-      if (handle) sh(`${ORCA_BIN} terminal close --terminal ${handle}`);
-      sh(`kill -KILL ${c.pid} 2>/dev/null`); // fallback: ensure the process is gone
+  for (const c of candidates) {
+    const snippet = c.command.replace(/\s+/g, " ").slice(0, 90);
+    const handle = terminalHandleForPid(c.pid);
+    if (DRY_RUN) {
       log(
-        `reaped pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m idle handle=${handle ?? "none"} :: ${snippet}`,
+        `DRY-RUN would reap pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m handle=${handle ?? "none"} :: ${snippet}`,
       );
       reaped++;
+      continue;
     }
+    if (handle) sh(`${ORCA_BIN} terminal close --terminal ${handle}`);
+    sh(`kill -KILL ${c.pid} 2>/dev/null`); // fallback: ensure the process is gone
+    log(
+      `reaped pid=${c.pid} age=${c.etimeMinutes.toFixed(0)}m handle=${handle ?? "none"} :: ${snippet}`,
+    );
+    reaped++;
   }
 
   log(
-    `reap tick: scanned ${scanned} /goal session(s), reaped ${reaped} (age>${AGE_MINUTES}m & idle)${DRY_RUN ? " [dry-run]" : ""}`,
+    `reap tick: ${liveGoal} /goal session(s) live, ${candidates.length} reapable (age>${AGE_MINUTES}m), reaped ${reaped}${DRY_RUN ? " [dry-run]" : ""}`,
   );
 }
 

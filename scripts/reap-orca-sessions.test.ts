@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { isReapable, parseEtimeToMinutes } from "./reap-orca-sessions.ts";
+import {
+  isReapable,
+  parseEtimeToMinutes,
+  selectReapable,
+} from "./reap-orca-sessions.ts";
 
 describe("parseEtimeToMinutes", () => {
   test("MM:SS", () => {
@@ -53,5 +57,41 @@ describe("isReapable", () => {
   test("threshold boundary", () => {
     expect(isReapable("claude /goal x", 120, 120)).toBe(false); // not strictly greater
     expect(isReapable("claude /goal x", 121, 120)).toBe(true);
+  });
+});
+
+describe("selectReapable", () => {
+  const THRESHOLD = 180;
+  // Real `ps -Awwo pid=,etime=,command=` lines: leading-space-padded pid, etime, command.
+  const PS = [
+    // The pid-1443 regression: a completed /vault-lint REPL idle for 3.75 days. The old CPU
+    // gate logged "skip … still active (+0.17s CPU)" every tick and never reaped it.
+    "  1443 03-16:51:38 claude /goal Run the /vault-lint skill to completion for the brain vault",
+    "  2000    45:00 claude /goal Run the nightly triage", // 45 min — under threshold, keep
+    "  3000 05:00:00 claude --plugin-dir /Users/x/work/brain-os-plugin --dangerously-skip-permissions", // user session
+    "  4000 09:00:00 claude --resume", // user resume, never reap
+    "  5000 02:00:00 /opt/homebrew/bin/bun run scripts/reap-orca-sessions.ts", // unrelated
+  ].join("\n");
+
+  test("reaps the multi-day idle /goal REPL regardless of CPU (pid-1443 regression)", () => {
+    const got = selectReapable(PS, THRESHOLD);
+    expect(got.map((c) => c.pid)).toEqual([1443]);
+    expect(got[0].etimeMinutes).toBeCloseTo(3 * 1440 + 16 * 60 + 51 + 38 / 60, 0);
+  });
+
+  test("keeps a /goal session younger than the threshold", () => {
+    expect(selectReapable(PS, THRESHOLD).some((c) => c.pid === 2000)).toBe(false);
+  });
+
+  test("never selects interactive, --resume, or non-claude processes", () => {
+    const pids = selectReapable(PS, THRESHOLD).map((c) => c.pid);
+    expect(pids).not.toContain(3000);
+    expect(pids).not.toContain(4000);
+    expect(pids).not.toContain(5000);
+  });
+
+  test("empty / garbage ps output yields nothing", () => {
+    expect(selectReapable("", THRESHOLD)).toEqual([]);
+    expect(selectReapable("\n\n  not a ps line\n", THRESHOLD)).toEqual([]);
   });
 });

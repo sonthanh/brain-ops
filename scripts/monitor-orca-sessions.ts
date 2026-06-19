@@ -42,7 +42,9 @@ const STATE_FILE = `${HOME}/.local/state/reap-orca-sessions/monitor-state.json`;
 
 const LIVE_THRESHOLD = Number(process.env.MONITOR_LIVE_THRESHOLD ?? 6);
 const REAPER_STALE_MIN = Number(process.env.MONITOR_REAPER_STALE_MINUTES ?? 90);
-const STUCK_AGE_MIN = Number(process.env.REAP_AGE_MINUTES ?? 90);
+// Must track the reaper's REAP_AGE_MINUTES default (180) so the accumulation alert counts
+// sessions the reaper would actually reap, not ones it's intentionally still giving time.
+const STUCK_AGE_MIN = Number(process.env.REAP_AGE_MINUTES ?? 180);
 // A non-terminal run (dispatched/running/…) older than this is treated as stuck. Generous so
 // genuinely long automations (/improve, /refactor can run 30-60 min) aren't flagged mid-work.
 const STUCK_GRACE_MIN = Number(process.env.MONITOR_STUCK_GRACE_MINUTES ?? 180);
