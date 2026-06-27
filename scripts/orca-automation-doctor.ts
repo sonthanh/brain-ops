@@ -24,7 +24,19 @@
 // LAUNCHED and then failed/hung (large snapshot, banner present) is NEVER retried — it may have
 // emailed, committed, or closed issues, so a blind re-run would duplicate those. Those are left
 // for the human (the monitor alerts on them on its next tick). This is why we don't retry on
-// `status==dispatch_failed` alone: that label sometimes hides a launched-then-killed run.
+// `status==dispatch_failed` alone: that label ALSO hides successful self-closing runs — an
+// automation that ends by running `orca terminal close` SIGHUPs itself, exits non-zero, and is
+// recorded `dispatch_failed` even though its work landed (confirmed 2026-06-27). Those self-close
+// "failures" carry a full TUI transcript (big snapshot, banner) ⇒ they read as skip-launched and
+// are correctly NOT retried.
+//
+// Snapshot caveat (safe by construction): an Orca terminal can be REUSED, so a snapshot may carry
+// scrollback from a PRIOR run (banner / `cclaude` from an earlier attempt). That can only push a
+// genuine never-launched failure in a dirty terminal toward skip-ambiguous/skip-launched — i.e.
+// a MISSED retry (the next scheduled run recovers it), never a wrongful retry of a real success.
+// The dangerous direction (retry a run that did work) is impossible: a run that emailed/committed
+// left a full transcript, so it can never present the <SNAPSHOT_LAUNCH_FLOOR no-banner shape that
+// the retry path requires. The safety bias is structural, not heuristic.
 //
 // CAPS (anti-hammer): each failed occurrence (keyed by run id) is retried at most once; each
 // automation is retried at most DAILY_CAP times per calendar day; at most RETRY_BUDGET_PER_TICK
