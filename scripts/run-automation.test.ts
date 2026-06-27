@@ -57,4 +57,12 @@ describe("automations.config integrity", () => {
       expect(s.prompt).not.toContain("ORCA_TERMINAL_HANDLE");
     }
   });
+  test("every automation invoking a /geo- skill loads the geo plugin explicitly (cwd-independent)", () => {
+    // geo skills are NOT in global enabledPlugins → they only resolve via cwd or --plugin-dir.
+    for (const s of Object.values(AUTOMATIONS)) {
+      if (/\/geo-/.test(s.prompt)) {
+        expect((s.pluginDirs ?? []).some((d) => d.includes("brain-geo-analysis-plugin"))).toBe(true);
+      }
+    }
+  });
 });

@@ -29,6 +29,14 @@ export interface AutomationSpec {
   quotaGate: boolean;
   /** Optional precheck shell command; non-zero exit ⇒ record a skipped run and don't invoke claude. */
   precheck?: string;
+  /**
+   * Extra `--plugin-dir` paths to load. brain-os is globally enabled so its skills resolve
+   * everywhere, but the geo plugin is NOT in global enabledPlugins — its skills only resolve
+   * when cwd IS the plugin repo. geo-digest runs from the brain vault (for its git commits), so
+   * it MUST load the geo plugin explicitly or `/geo-digest` won't resolve. Verified: `claude -p
+   * --plugin-dir <geo>` from the brain workdir → /geo-digest is available.
+   */
+  pluginDirs?: string[];
   /** Telegram-alert on non-zero claude exit (uses ~/.config/brain/env creds). */
   alertOnFail: boolean;
 }
@@ -146,6 +154,7 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     dedup: "day",
     quotaGate: true,
     alertOnFail: true,
+    pluginDirs: [GEO],
     precheck: `${BUN_BIN} run ${GEO}/scripts/geo-dev-precheck.ts`,
     prompt:
       "/goal Run the daily /geo-dev self-development loop to completion. Plugin source = /Users/thanhdo/work/brain-geo-analysis-plugin. Vault + gh_task_repo are in ~/.brain-os/brain-os.config.md. Runs locally — no vault bootstrap. Read the skill spec at skills/geo-dev/SKILL.md and follow every phase exactly. The Phase-0 change-gate has already passed (precheck) — invoke the Workflow tool with scriptPath ABSOLUTE /Users/thanhdo/work/brain-geo-analysis-plugin/workflows/geo-dev.mjs and args {}; do NOT poll it with Bash/Monitor loops, wait for completion and read its returned summary. After it returns, advance the cursor: bun run scripts/geo-dev-precheck.ts --save, and confirm the Workflow wrote the report + the terminal outcome-log line; if it crashed before the Report phase, write a fail outcome line yourself (reason=workflow-crash). Rules: edit ONLY this source repo, never installed plugin copies; issues → sonthanh/ai-brain (labels geo-dev, status:ready), NEVER the plugin repo; every decided gap lands as a PR for human merge, never force-push to main; content gaps (essays/sources/prompts/framework) are OUT of scope — route to /geo-improve; zero decided gaps is a valid, SUCCESSFUL day. Done = an outcome-log row for today exists in {vault}/daily/skill-outcomes/geo-dev.log AND is committed+pushed to the vault. Do not stop until confirmed.",
@@ -160,6 +169,7 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     dedup: "day",
     quotaGate: true,
     alertOnFail: true,
+    pluginDirs: [GEO], // runs from BRAIN workdir → needs explicit geo-plugin load
     prompt:
       "/goal Run the weekly /geo-digest for the current ISO week to completion on the brain vault. Vault root = /Users/thanhdo/work/brain. vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md (skill Step 0 reads it). Runs locally — NO vault bootstrap. Read the /geo-digest skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-digest/SKILL.md and execute ALL phases exactly, in order: Step 0 resolve config + started breadcrumb to daily/skill-outcomes/geo-digest.log; Phase 1 load state; Phase 2 scan sources (web/rss/x/fb-manual) for the past 7 days (WebSearch/WebFetch only); Phase 3 tag + cluster via the 6 framework dimensions; Phase 4 scorecard (US/CN/VN/CH x 8 determinants + internal stage + weekly delta); Phase 5 exec brief (~600 words) to weekly/YYYY-WW/brief.md; Phase 6 2-4 detail essays (1500-3000 words, Ly Xuan Hai analytical voice); Phase 7 email the brief via Gmail (fallback thanh@emvn.co; email failure is NON-BLOCKING/partial); Phase 8 file the /geo-quiz grill task as a GitHub issue on sonthanh/ai-brain; Phase 9 update state.json cursors, commit, push. Rules: NEVER edit installed plugin copies; light-week fallback (fewer than 2 essay-worthy themes → exec brief only); VN quotes verbatim with English gloss; email failure one-shot, do NOT retry; append exactly one terminal {pass|partial|fail} row to daily/skill-outcomes/geo-digest.log. Done = weekly/{ISO-WEEK}/brief.md exists, a terminal row is in the log, and the commit is pushed. Do not stop until all three are confirmed.",
   },
@@ -173,6 +183,7 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     dedup: "day",
     quotaGate: true,
     alertOnFail: true,
+    pluginDirs: [GEO],
     prompt:
       "/goal Run the weekly /geo-improve pass to completion. Vault root = /Users/thanhdo/work/brain. Plugin source = /Users/thanhdo/work/brain-geo-analysis-plugin (this worktree). vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md. Runs locally — no vault bootstrap. Read the /geo-improve skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-improve/SKILL.md and execute ALL phases: Phase 1 collect signals (geo-digest.log + geo-quiz.log + grill.md counter-takes + git diffs, past 7 days); Phase 2 classify Class 1 (auto-apply) vs Class 2 (email for approval) per the risk table; Phase 3 generate 3-5 candidate variants per target file, run evals, pick winner per the eval gate; Phase 4 Class 1 commit+push to the plugin source repo, Class 2 email diff for approval; Phase 5 write report to daily/improve-reports/{date}-geo.md; Phase 6 append outcome-log line to daily/skill-outcomes/geo-improve.log, commit+push that row even on a zero-signal run. Rules: NEVER edit installed plugin copies; Class 1 hard gates (prompt diff <=200 chars; non-primary source add/drop only; no change to SKILL.md required-structure lines); primary sources (Ly Xuan Hai, Thayer, ISEAS) are ALWAYS Class 2; eval gate non-negotiable; zero signals → log pass with class1=0 class2=0, commit+push, exit. Done = an outcome-log row exists in daily/skill-outcomes/geo-improve.log AND is committed+pushed. Do not stop until confirmed.",
   },

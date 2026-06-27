@@ -170,9 +170,10 @@ function main(): number {
     log(`quota ok — ${q.reason}`);
   }
 
-  const argv = ["claude", "--dangerously-skip-permissions", "--model", spec.model, "-p", spec.prompt];
+  const pluginArgs = (spec.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]);
+  const argv = ["claude", "--dangerously-skip-permissions", ...pluginArgs, "--model", spec.model, "-p", spec.prompt];
   if (DRY_RUN) {
-    log(`dry-run: would exec: claude --dangerously-skip-permissions --model ${spec.model} -p '<prompt ${spec.prompt.length}c>' (cwd ${spec.workdir})`);
+    log(`dry-run: would exec: claude ${pluginArgs.join(" ")} --model ${spec.model} -p '<prompt ${spec.prompt.length}c>' (cwd ${spec.workdir})`);
     return 0;
   }
 
