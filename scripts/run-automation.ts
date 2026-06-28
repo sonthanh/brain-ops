@@ -29,6 +29,10 @@ const STATE_ROOT = `${HOME}/.local/state/brain-automations`;
 const ENV_FILE = process.env.BRAIN_ENV_FILE ?? `${HOME}/.config/brain/env`;
 const USAGE_FILE = process.env.CC_USAGE_FILE ?? `${HOME}/.cache/ccstatusline/usage.json`;
 const QUOTA_THRESHOLD = Number(process.env.BRAIN_AUTOMATION_QUOTA_THRESHOLD ?? 90);
+// Hard wall-clock cap when a spec doesn't set its own. Covers the observed runtimes (vault-lint
+// ~10m, refactor ~20m) with margin; the reaper can't catch headless `claude -p`, so this is the
+// only thing that stops a hung run from idling and stacking across fires.
+const DEFAULT_TIMEOUT_MS = Number(process.env.BRAIN_AUTOMATION_TIMEOUT_MS ?? 45 * 60 * 1000);
 const DRY_RUN = process.argv.includes("--dry-run");
 
 // ---------------------------------------------------------------------------
@@ -177,7 +181,15 @@ function main(): number {
     return 0;
   }
 
-  log(`invoking claude -p (cwd ${spec.workdir})`);
+  // Skills that invoke the Workflow tool detach it as a background task; `claude -p` kills
+  // background tasks at a 600s default ceiling (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS) and exits
+  // "successfully" but incomplete. =0 makes -p wait for the workflow; the harness then re-invokes
+  // the agent to finish (verified). Bounded by `timeout` below so it can't wait forever.
+  const env: Record<string, string> = { ...process.env };
+  if (spec.waitForBackgroundTasks) env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS = "0";
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  log(`invoking claude -p (cwd ${spec.workdir}, timeout ${(timeoutMs / 60000).toFixed(0)}m${spec.waitForBackgroundTasks ? ", waits for bg workflows" : ""})`);
   const started = Date.now();
   // stdin from /dev/null so claude doesn't wait 3s for piped input; stream output to the log.
   const proc = Bun.spawnSync(argv, {
@@ -185,6 +197,9 @@ function main(): number {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    env,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
   });
   const out = proc.stdout.toString() + proc.stderr.toString();
   try {
@@ -194,14 +209,17 @@ function main(): number {
   }
   const mins = ((Date.now() - started) / 60000).toFixed(1);
 
-  if (proc.exitCode === 0) {
+  // A timeout kill surfaces as a signal (no clean exit code) — treat as a failure, not success.
+  const timedOut = proc.signalCode === "SIGKILL" || (proc.exitCode === null && proc.signalCode != null);
+  if (proc.exitCode === 0 && !timedOut) {
     if (marker) writeFileSync(lastRunFile, marker);
     log(`=== ${spec.label} done OK in ${mins}m ===`);
     return 0;
   }
-  log(`=== ${spec.label} FAILED exit=${proc.exitCode} in ${mins}m ===`);
-  if (spec.alertOnFail && !DRY_RUN) void sendTelegram(spec.label, `\`claude -p\` exited ${proc.exitCode}. Check \`${logFile}\`.`);
-  return proc.exitCode ?? 1;
+  const why = timedOut ? `TIMED OUT after ${mins}m (cap ${(timeoutMs / 60000).toFixed(0)}m)` : `exit=${proc.exitCode}`;
+  log(`=== ${spec.label} FAILED ${why} ===`);
+  if (spec.alertOnFail && !DRY_RUN) void sendTelegram(spec.label, `\`claude -p\` ${why}. Check \`${logFile}\`.`);
+  return proc.exitCode || 1;
 }
 
 if (import.meta.main) process.exit(main());

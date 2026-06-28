@@ -39,6 +39,18 @@ export interface AutomationSpec {
   pluginDirs?: string[];
   /** Telegram-alert on non-zero claude exit (uses ~/.config/brain/env creds). */
   alertOnFail: boolean;
+  /**
+   * Hard wall-clock cap (ms) for the claude run — the runner SIGKILLs past it. The reaper only
+   * matches interactive `claude /goal`, NOT `claude … -p /goal`, so without this a hung headless
+   * run would idle forever and stack across daily fires. Defaults to DEFAULT_TIMEOUT_MS.
+   */
+  timeoutMs?: number;
+  /**
+   * Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 so `claude -p` waits for a detached Workflow
+   * instead of killing it at the 600s default ceiling. Required for skills that invoke the
+   * Workflow tool (geo-dev). Bounded by timeoutMs so it can't wait truly forever.
+   */
+  waitForBackgroundTasks?: boolean;
 }
 
 const HOME = process.env.HOME ?? "";
@@ -155,6 +167,11 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     quotaGate: true,
     alertOnFail: true,
     pluginDirs: [GEO],
+    // geo-dev invokes the Workflow tool (workflows/geo-dev.mjs) as a detached background task.
+    // Without this, claude -p kills it at the 600s ceiling → run exits "done OK" but incomplete
+    // (no outcome log, no PR). Wait for it; the workflow can run long, so cap at 90 min.
+    waitForBackgroundTasks: true,
+    timeoutMs: 90 * 60 * 1000,
     precheck: `${BUN_BIN} run ${GEO}/scripts/geo-dev-precheck.ts`,
     prompt:
       "/goal Run the daily /geo-dev self-development loop to completion. Plugin source = /Users/thanhdo/work/brain-geo-analysis-plugin. Vault + gh_task_repo are in ~/.brain-os/brain-os.config.md. Runs locally — no vault bootstrap. Read the skill spec at skills/geo-dev/SKILL.md and follow every phase exactly. The Phase-0 change-gate has already passed (precheck) — invoke the Workflow tool with scriptPath ABSOLUTE /Users/thanhdo/work/brain-geo-analysis-plugin/workflows/geo-dev.mjs and args {}; do NOT poll it with Bash/Monitor loops, wait for completion and read its returned summary. After it returns, advance the cursor: bun run scripts/geo-dev-precheck.ts --save, and confirm the Workflow wrote the report + the terminal outcome-log line; if it crashed before the Report phase, write a fail outcome line yourself (reason=workflow-crash). Rules: edit ONLY this source repo, never installed plugin copies; issues → sonthanh/ai-brain (labels geo-dev, status:ready), NEVER the plugin repo; every decided gap lands as a PR for human merge, never force-push to main; content gaps (essays/sources/prompts/framework) are OUT of scope — route to /geo-improve; zero decided gaps is a valid, SUCCESSFUL day. Done = an outcome-log row for today exists in {vault}/daily/skill-outcomes/geo-dev.log AND is committed+pushed to the vault. Do not stop until confirmed.",

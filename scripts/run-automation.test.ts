@@ -65,4 +65,10 @@ describe("automations.config integrity", () => {
       }
     }
   });
+  test("geo-dev waits for its background Workflow (else -p kills it at 600s)", () => {
+    const geoDev = AUTOMATIONS["geo-dev"];
+    expect(geoDev.waitForBackgroundTasks).toBe(true);
+    // and gives the long workflow more than the default cap
+    expect(geoDev.timeoutMs).toBeGreaterThan(45 * 60 * 1000);
+  });
 });
