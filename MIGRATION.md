@@ -174,3 +174,19 @@ The plist files stay on disk (disabled); delete them if you want a clean machine
   on the target, not committed.
 - **Username-agnostic.** The registry and generators derive every path from `$HOME`; no `/Users/…`
   is hardcoded. If your global `~/.claude/hooks/` scripts hardcode paths, fix those separately.
+- **Quota gate is a no-op without ccstatusline.** `run-automation.ts` reads
+  `~/.cache/ccstatusline/usage.json` to skip runs when weekly subscription usage is ≥90%. Missing
+  cache → it fails open (jobs run unthrottled). Install ccstatusline on the target to restore the
+  quota guard, or set `BRAIN_AUTOMATION_QUOTA_THRESHOLD` / `CC_USAGE_FILE`.
+
+---
+
+## Beyond the automations (optional — only if you also use these on the target)
+
+These are local-only too but are **not** required for the scheduled jobs:
+
+- `~/.brain-os/airtable-premium-bases.txt`, `~/.brain-os/areas.json` — read by interactive
+  airtable/areas skills, not the automations. Copy from the source Mac if you run those skills.
+- Shell aliases (`cr`, `cc2`, …) in `~/.zshrc` — interactive convenience, not used by launchd jobs.
+- **Gmail triage** runs entirely on **GitHub Actions** with secrets stored as GitHub repo secrets
+  (cloud, not on any Mac) — it already works from anywhere; nothing to migrate.
