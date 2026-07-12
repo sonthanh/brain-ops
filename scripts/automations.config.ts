@@ -205,3 +205,15 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
       "/goal Run the weekly /geo-improve pass to completion. Vault root = /Users/thanhdo/work/brain. Plugin source = /Users/thanhdo/work/brain-geo-analysis-plugin (this worktree). vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md. Runs locally — no vault bootstrap. Read the /geo-improve skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-improve/SKILL.md and execute ALL phases: Phase 1 collect signals (geo-digest.log + geo-quiz.log + grill.md counter-takes + git diffs, past 7 days); Phase 2 classify Class 1 (auto-apply) vs Class 2 (email for approval) per the risk table; Phase 3 generate 3-5 candidate variants per target file, run evals, pick winner per the eval gate; Phase 4 Class 1 commit+push to the plugin source repo, Class 2 email diff for approval; Phase 5 write report to daily/improve-reports/{date}-geo.md; Phase 6 append outcome-log line to daily/skill-outcomes/geo-improve.log, commit+push that row even on a zero-signal run. Rules: NEVER edit installed plugin copies; Class 1 hard gates (prompt diff <=200 chars; non-primary source add/drop only; no change to SKILL.md required-structure lines); primary sources (Ly Xuan Hai, Thayer, ISEAS) are ALWAYS Class 2; eval gate non-negotiable; zero signals → log pass with class1=0 class2=0, commit+push, exit. Done = an outcome-log row exists in daily/skill-outcomes/geo-improve.log AND is committed+pushed. Do not stop until confirmed.",
   },
 };
+
+// The geo-* prompts embed absolute repo paths so the headless agent has no ambiguity about where
+// the plugin source and vault live. They were authored with a machine home hardcoded; rewrite any
+// `/Users/<name>/work/…` prefix to the $HOME-derived constants (BRAIN/GEO) so the registry is
+// portable to any macOS user and carries no hardcoded username. GEO is substituted before BRAIN
+// because "…/work/brain" is a string prefix of "…/work/brain-geo-analysis-plugin"; the BRAIN
+// pattern uses a negative lookahead so it never eats a "…/work/brain-*" sibling repo path.
+for (const spec of Object.values(AUTOMATIONS)) {
+  spec.prompt = spec.prompt
+    .replace(/\/Users\/[^/\s]+\/work\/brain-geo-analysis-plugin/g, GEO)
+    .replace(/\/Users\/[^/\s]+\/work\/brain(?![-\w])/g, BRAIN);
+}

@@ -16,7 +16,9 @@ import { homedir } from "node:os";
 import { AUTOMATIONS, type AutomationSpec } from "./automations.config.ts";
 
 const HOME = homedir();
-const BUN = "/opt/homebrew/bin/bun";
+// Resolve bun on the generating machine (Homebrew, ~/.bun, or elsewhere) so the plists are
+// portable rather than pinned to this machine's Homebrew prefix.
+const BUN = Bun.which("bun") ?? "/opt/homebrew/bin/bun";
 const RUNNER = `${HOME}/work/brain-ops/scripts/run-automation.ts`;
 const LA_DIR = `${HOME}/Library/LaunchAgents`;
 const PATH_ENV = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
@@ -78,6 +80,8 @@ function main(): void {
   const printOnly = args.includes("--print");
   const ids = args.filter((a) => !a.startsWith("-"));
   const specs = Object.values(AUTOMATIONS).filter((s) => ids.length === 0 || ids.includes(s.id));
+
+  if (!printOnly) mkdirSync(LA_DIR, { recursive: true }); // fresh macOS accounts lack ~/Library/LaunchAgents
 
   const bootstrapCmds: string[] = [`UID_NUM=$(id -u)`];
   for (const spec of specs) {

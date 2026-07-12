@@ -4,5 +4,9 @@ node_modules/
 .credentials.json
 /tmp/
 
+# Business data is PRIVATE and lives in the vault (sonthanh/ai-brain). This repo is PUBLIC —
+# never commit anything under business/ here (partner emails, ledgers, learnings = PII leak).
+business/
+
 # Keep dist/ committed (bundled actions need it)
 # !.github/actions/*/dist/
