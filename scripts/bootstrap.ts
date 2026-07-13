@@ -101,9 +101,27 @@ function run(cmd: string[], cwd?: string): number {
   return Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit", ...(cwd ? { cwd } : {}) }).exitCode ?? 1;
 }
 
+/** Read-only "double check": report repos, plist presence, and ~/.claude config drift. */
+function doCheck(home: string): void {
+  console.log("=== brain setup check (read-only) ===");
+  for (const { dir } of repoPlan(home)) console.log(`  ${existsSync(dir) ? "✓" : "✗"} ${dir}`);
+  const ccDir = `${home}/work/claude-config`;
+  console.log(`  ${existsSync(ccDir) ? "✓" : "✗"} ${ccDir}`);
+  const la = `${home}/Library/LaunchAgents`;
+  const have = allLabels().filter((l) => existsSync(`${la}/${l}.plist`)).length;
+  console.log(`  plists present: ${have}/${allLabels().length}`);
+  if (existsSync(`${ccDir}/sync.ts`)) {
+    console.log("");
+    run(["bun", "run", `${ccDir}/sync.ts`, "--check"], ccDir);
+  } else {
+    console.log("  ~/.claude config: claude-config not cloned yet (run bootstrap to fetch + apply)");
+  }
+}
+
 function main(): void {
   const load = process.argv.includes("--load");
   const HOME = homedir();
+  if (process.argv.includes("--check")) return doCheck(HOME);
   console.log("=== brain automation bootstrap (macOS) ===\n");
 
   // 1 — prerequisites
@@ -136,6 +154,18 @@ function main(): void {
     }
   }
 
+  // 2b — claude-config: shared ~/.claude behavioral config (private repo)
+  const ccDir = `${HOME}/work/claude-config`;
+  if (existsSync(ccDir)) {
+    console.log(`✓ ${ccDir} (exists — pulling latest)`);
+    run(["git", "pull", "--rebase", "--autostash"], ccDir);
+  } else {
+    console.log(`cloning claude-config → ${ccDir}`);
+    if (run(["git", "clone", `git@github.com:${GITHUB_OWNER}/claude-config.git`, ccDir]) !== 0) {
+      console.log("  ! claude-config clone failed (private repo — check GitHub SSH access)");
+    }
+  }
+
   // 3 — install brain-ops deps
   const ops = `${HOME}/work/brain-ops`;
   if (existsSync(`${ops}/package.json`)) {
@@ -163,6 +193,12 @@ function main(): void {
     writeFileSync(envFile, renderEnvSkeleton());
     chmodSync(envFile, 0o600);
     console.log(`wrote ${envFile}  ← fill in TG_BOT_TOKEN + TG_CHAT_ID`);
+  }
+
+  // 4b — apply shared ~/.claude config (CLAUDE.md/RTK.md/rules/hooks; settings.json stays reference-only)
+  if (existsSync(`${ccDir}/sync.ts`)) {
+    console.log("\nsyncing ~/.claude config…");
+    run(["bun", "run", `${ccDir}/sync.ts`], ccDir);
   }
 
   // 5 — generate plists from the committed configs
@@ -199,11 +235,12 @@ function main(): void {
 1. GitHub auth      : gh auth login                 (repo scope; access to ${GITHUB_OWNER}/*)
 2. Claude login     : claude                        (log in once — subscription account)
 3. Telegram secrets : edit ${HOME}/.config/brain/env  (TG_BOT_TOKEN, TG_CHAT_ID)
-4. Claude layer     : copy ~/.claude/{CLAUDE.md,RTK.md,rules,hooks,settings.json,plugins} from the source Mac
-                      → MIGRATION.md §"Claude global layer"
+4. Claude config    : synced from the claude-config repo above. settings.json is reference-only —
+                      run \`bun run ~/work/claude-config/sync.ts --check\` and reconcile any drift.
 5. brain-os plugin  : ${brainOsLine}
 6. Cutover (old Mac): disable its jobs so only one machine runs each — MIGRATION.md §Cutover
 ${load ? "" : "\nPlists are written but NOT loaded. After steps 1–5, load them:\n  bun run scripts/bootstrap.ts --load"}
+Double-check anytime (read-only): bun run scripts/bootstrap.ts --check
 `);
 }
 
