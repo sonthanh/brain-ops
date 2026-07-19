@@ -32,9 +32,11 @@ Mac's username.
 ## Prerequisites
 
 - macOS with **Homebrew** (`https://brew.sh`)
-- Toolchain: `git`, `bun`, `node`, `gh`, `jq`, `claude` (Claude Code)
+- Toolchain: `git`, `bun`, `node`, `gh`, `jq`, `claude` (Claude Code), `codeburn`
   - `brew install git bun node gh jq`
   - Claude Code: install from `https://docs.claude.com/en/docs/claude-code`
+  - `npm install -g codeburn` — the `codeburn-optimize` cron aborts with
+    `ERROR: codeburn not in PATH` without it.
 - An **SSH key on this machine added to GitHub** with access to the `sonthanh/*` repos
   (the private vault `ai-brain` requires it): `ssh -T git@github.com` should greet you.
 
