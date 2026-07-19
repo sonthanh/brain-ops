@@ -7,6 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPS_JOBS, PATH_ENV, renderPlist, type OpsJob } from "./gen-ops-plists.ts";
 
+// `plutil` ships only with macOS. CI runs on ubuntu, where this test could never
+// pass — it failed there continuously rather than being skipped, keeping main red.
+// launchd plists are a macOS-only artifact, so validating them on the platform that
+// consumes them (and skipping elsewhere) is the correct scope.
+const HAS_PLUTIL = Bun.which("plutil") !== null;
+
 const byId = (id: string): OpsJob => {
   const j = OPS_JOBS.find((x) => x.id === id);
   if (!j) throw new Error(`no job ${id}`);
@@ -86,7 +92,7 @@ describe("renderPlist", () => {
     expect(existsSync(join(fakeHome, "Library/LaunchAgents/com.brain.triage.plist"))).toBe(true);
   });
 
-  test("every rendered plist passes plutil -lint (well-formed)", () => {
+  test.skipIf(!HAS_PLUTIL)("every rendered plist passes plutil -lint (well-formed)", () => {
     const dir = mkdtempSync(join(tmpdir(), "ops-plist-"));
     for (const j of OPS_JOBS) {
       const p = join(dir, `com.brain.${j.id}.plist`);
