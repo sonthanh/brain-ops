@@ -55,7 +55,9 @@ export interface AutomationSpec {
 
 const HOME = process.env.HOME ?? "";
 const BRAIN = `${HOME}/work/brain`;
-const BUN_BIN = "/opt/homebrew/bin/bun";
+// Resolve bun on this machine (Homebrew, ~/.bun, or elsewhere) so prechecks are not pinned to
+// the source Mac's install location — same idiom as gen-automation-plists.ts.
+const BUN_BIN = Bun.which("bun") ?? "/opt/homebrew/bin/bun";
 
 const GEO = `${HOME}/work/brain-geo-analysis-plugin`;
 const PLUGIN = `${HOME}/work/brain-os-plugin`;

@@ -8,7 +8,10 @@
 # gated until the classifier earns trust. All judgment lives in triage-issues.ts.
 set -uo pipefail
 
-export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/v22.16.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# Prepend our bins but KEEP the inherited PATH — the plist's EnvironmentVariables already carries
+# this machine's node bin dir (resolved by gen-ops-plists.ts). Overwriting it here would re-pin the
+# stale nvm version that generator exists to avoid.
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}"
 
 VAULT="${TRIAGE_VAULT:-$HOME/work/brain}"
 STATE_DIR="${TRIAGE_STATE_DIR:-$HOME/.local/state/triage}"
