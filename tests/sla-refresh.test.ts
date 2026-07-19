@@ -362,6 +362,13 @@ Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
 |------|-------|------|---------|------------|----------|----------------|-------------|
 `;
 
+  // Pinned wall-clock, just after the fixtures' `2026-05-16 11:30 UTC` stamp.
+  // The resolver trims Resolved rows older than 7 days, so without this the
+  // date-bearing fixtures above age out of the audit window and the capture
+  // pass sees an empty `resolved` set — the tests would pass on the day they
+  // were written and fail silently ever after.
+  const FIXTURE_NOW = new Date("2026-05-16T12:00:00Z");
+
   function loadLearningEntries(): Array<Record<string, unknown>> {
     const content = readFileSync(learningsPath, "utf-8");
     const sep = "\n---\n";
@@ -398,6 +405,7 @@ Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
       threadsPath,
       dryRun: false,
       classifyLearningsPath: learningsPath,
+      now: FIXTURE_NOW,
     });
     expect(code).toBe(0);
     const entries = loadLearningEntries();
@@ -420,6 +428,7 @@ Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
       threadsPath,
       dryRun: false,
       classifyLearningsPath: learningsPath,
+      now: FIXTURE_NOW,
     });
     expect(firstCode).toBe(0);
     expect(loadLearningEntries()).toHaveLength(1);
@@ -433,6 +442,7 @@ Open: 0 | Breached: 0 (fast: 0, normal: 0, slow: 0)
       threadsPath,
       dryRun: false,
       classifyLearningsPath: learningsPath,
+      now: FIXTURE_NOW,
     });
     expect(secondCode).toBe(0);
     const entries = loadLearningEntries();

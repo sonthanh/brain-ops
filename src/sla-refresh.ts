@@ -28,6 +28,13 @@ interface Args {
    * relative path resolves identically.
    */
   classifyLearningsPath: string | undefined;
+  /**
+   * Wall-clock reference for the resolver's windows (7-day Resolved trim,
+   * breach math) and `observedAt` stamps. Production leaves this undefined and
+   * gets `new Date()`; tests pin it so date-bearing ledger fixtures don't age
+   * out of the 7-day audit window and start failing on a delay.
+   */
+  now?: Date;
 }
 
 const USER_ASSERTED_PATTERN = /user-asserted/i;
@@ -145,7 +152,7 @@ export async function runRefresh(args: Args): Promise<number> {
   // replies). Without teamDomains, the fetch is single-thread only.
   const identities = parseIdentities(args.gmailRulesPath);
   const threads = await loadThreads(args, identities.teamDomains);
-  const now = new Date();
+  const now = args.now ?? new Date();
 
   // Rule-sweep pass (deterministic invariants). Drops awareness / automation /
   // billing / invitation / portal / mass-blast rows that shouldn't be in the
