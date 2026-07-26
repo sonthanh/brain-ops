@@ -17,8 +17,9 @@ import { AUTOMATIONS, type AutomationSpec } from "./automations.config.ts";
 
 const HOME = homedir();
 // Resolve bun on the generating machine (Homebrew, ~/.bun, or elsewhere) so the plists are
-// portable rather than pinned to this machine's Homebrew prefix.
-const BUN = Bun.which("bun") ?? "/opt/homebrew/bin/bun";
+// portable rather than pinned to this machine's Homebrew prefix. Fall back to the running
+// interpreter (process.execPath) rather than a hardcoded path that may not exist here.
+const BUN = Bun.which("bun") ?? process.execPath;
 const RUNNER = `${HOME}/work/brain-ops/scripts/run-automation.ts`;
 const LA_DIR = `${HOME}/Library/LaunchAgents`;
 const PATH_ENV = `${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;

@@ -8,7 +8,7 @@
 // (no `orca terminal close`, no "don't close your terminal" notes) — `claude -p` exits on its
 // own with a real exit code, so there is nothing to tear down and nothing to mislabel.
 
-export type DedupKey = "day" | "hour" | "none";
+export type DedupKey = "week" | "day" | "hour" | "none";
 
 export interface AutomationSpec {
   /** Stable id — used for state dir, log file, launchd label suffix. */
@@ -189,8 +189,16 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     label: "Geo digest",
     model: "opus",
     workdir: BRAIN,
-    schedule: [{ Hour: 8, Minute: 0, Weekday: 6 }], // Saturday
-    dedup: "day",
+    // Saturday 08:00 primary + Sunday 08:00 catch-up. dedup:"week" makes the pair idempotent —
+    // the marker is written only on a clean exit, so a successful Saturday run makes Sunday skip
+    // (same ISO-week marker), while a Saturday HARD crash (e.g. the W30 "connection closed" API
+    // drop) leaves no marker and Sunday re-runs the week. A partial/email-failed Saturday still
+    // exits 0 → marker written → no Sunday re-run (email failure is non-blocking by design).
+    schedule: [
+      { Hour: 8, Minute: 0, Weekday: 6 }, // Saturday (primary)
+      { Hour: 8, Minute: 0, Weekday: 0 }, // Sunday (catch-up if Saturday hard-crashed)
+    ],
+    dedup: "week",
     quotaGate: true,
     alertOnFail: true,
     pluginDirs: [GEO], // runs from BRAIN workdir → needs explicit geo-plugin load

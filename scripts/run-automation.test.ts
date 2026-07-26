@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { classifyPrecheckExit, dedupMarker, quotaDecision } from "./run-automation.ts";
+import { classifyPrecheckExit, dedupMarker, isoWeekMarker, quotaDecision } from "./run-automation.ts";
 import { AUTOMATIONS } from "./automations.config.ts";
 
 describe("classifyPrecheckExit", () => {
@@ -16,7 +16,26 @@ describe("dedupMarker", () => {
   const iso = "2026-06-27T13:45:09.123Z";
   test("day → YYYY-MM-DD", () => expect(dedupMarker("day", iso)).toBe("2026-06-27"));
   test("hour → YYYY-MM-DDTHH", () => expect(dedupMarker("hour", iso)).toBe("2026-06-27T13"));
+  test("week → YYYY-Www", () => expect(dedupMarker("week", iso)).toBe("2026-W26"));
   test("none → empty (disabled)", () => expect(dedupMarker("none", iso)).toBe(""));
+});
+
+describe("isoWeekMarker (geo-digest Sat+Sun catch-up idempotency)", () => {
+  // The whole point: Saturday's primary fire and Sunday's catch-up must produce the SAME marker so
+  // a successful Saturday run makes Sunday dedup-skip. W30 2026 = Mon 07-20 … Sun 07-26.
+  test("Saturday and the next Sunday collapse to one marker", () => {
+    expect(isoWeekMarker("2026-07-25T06:00:00Z")).toBe("2026-W30"); // Sat
+    expect(isoWeekMarker("2026-07-26T07:00:00Z")).toBe("2026-W30"); // Sun (same ISO week)
+  });
+  test("the following Monday rolls to the next week", () => {
+    expect(isoWeekMarker("2026-07-27T06:00:00Z")).toBe("2026-W31"); // Mon
+  });
+  test("Jan 1 2026 (a Thursday) is week 1 of week-year 2026", () => {
+    expect(isoWeekMarker("2026-01-01T12:00:00Z")).toBe("2026-W01");
+  });
+  test("week-year rollover: 2027-01-01 (Friday) belongs to 2026-W53", () => {
+    expect(isoWeekMarker("2027-01-01T12:00:00Z")).toBe("2026-W53");
+  });
 });
 
 describe("quotaDecision", () => {

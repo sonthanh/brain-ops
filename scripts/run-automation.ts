@@ -52,10 +52,26 @@ export function classifyPrecheckExit(exitCode: number | null): "run" | "skip" | 
   return "skip";
 }
 
+/** ISO-8601 week-year marker (e.g. "2026-W30") for a UTC ISO timestamp. Mon–Sun of the same week
+ *  map to the same string, so a Saturday run and a Sunday catch-up dedup against each other. */
+export function isoWeekMarker(iso: string): string {
+  const d = new Date(iso);
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = (t.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
+  t.setUTCDate(t.getUTCDate() - dayNum + 3); // move to the week's Thursday (fixes the week-year)
+  const weekYear = t.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(weekYear, 0, 4));
+  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
+  const week = 1 + Math.round((t.getTime() - firstThursday.getTime()) / (7 * 24 * 3600 * 1000));
+  return `${weekYear}-W${String(week).padStart(2, "0")}`;
+}
+
 /** Dedup marker for "now" at the configured granularity. Empty string ⇒ dedup disabled. */
 export function dedupMarker(kind: AutomationSpec["dedup"], iso: string): string {
   if (kind === "none") return "";
   if (kind === "hour") return iso.slice(0, 13); // YYYY-MM-DDTHH
+  if (kind === "week") return isoWeekMarker(iso); // YYYY-Www
   return iso.slice(0, 10); // YYYY-MM-DD
 }
 
