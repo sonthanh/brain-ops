@@ -57,7 +57,12 @@ const HOME = process.env.HOME ?? "";
 const BRAIN = `${HOME}/work/brain`;
 // Resolve bun on this machine (Homebrew, ~/.bun, or elsewhere) so prechecks are not pinned to
 // the source Mac's install location — same idiom as gen-automation-plists.ts.
-const BUN_BIN = Bun.which("bun") ?? "/opt/homebrew/bin/bun";
+// Resolve to the bun that is actually running this process (process.execPath) when it isn't on
+// PATH. launchd's PATH omits ~/.bun/bin, so Bun.which("bun") returns null there and the old
+// hardcoded /opt/homebrew/bin/bun fallback didn't exist on this machine → every precheck exited
+// 127 (command-not-found) and run-automation.ts silently skipped the job. process.execPath is the
+// interpreter launchd invoked (the plist's absolute bun path), so it always exists and is correct.
+const BUN_BIN = Bun.which("bun") ?? process.execPath;
 
 const GEO = `${HOME}/work/brain-geo-analysis-plugin`;
 const PLUGIN = `${HOME}/work/brain-os-plugin`;

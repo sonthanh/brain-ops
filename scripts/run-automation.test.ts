@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { dedupMarker, quotaDecision } from "./run-automation.ts";
+import { existsSync } from "node:fs";
+import { classifyPrecheckExit, dedupMarker, quotaDecision } from "./run-automation.ts";
 import { AUTOMATIONS } from "./automations.config.ts";
+
+describe("classifyPrecheckExit", () => {
+  test("0 → run", () => expect(classifyPrecheckExit(0)).toBe("run"));
+  test("semantic non-zero (10 = geo-dev no-op) → skip", () => expect(classifyPrecheckExit(10)).toBe("skip"));
+  test("1 (precheck-improve skip) → skip", () => expect(classifyPrecheckExit(1)).toBe("skip"));
+  test("127 command-not-found → error (must NOT masquerade as skip)", () =>
+    expect(classifyPrecheckExit(127)).toBe("error"));
+  test("126 not-executable → error", () => expect(classifyPrecheckExit(126)).toBe("error"));
+});
 
 describe("dedupMarker", () => {
   const iso = "2026-06-27T13:45:09.123Z";
@@ -63,6 +73,17 @@ describe("automations.config integrity", () => {
       if (/\/geo-/.test(s.prompt)) {
         expect((s.pluginDirs ?? []).some((d) => d.includes("brain-geo-analysis-plugin"))).toBe(true);
       }
+    }
+  });
+  test("every precheck's interpreter binary exists on disk (guards the BUN_BIN 127 regression)", () => {
+    // The precheck runs under launchd's PATH, which omits ~/.bun/bin. If the resolved bun path does
+    // not exist, the command exits 127 and (pre-fix) was silently swallowed as an intentional skip —
+    // which hid geo-dev for a week. The first token of every precheck must be an existing executable.
+    for (const s of Object.values(AUTOMATIONS)) {
+      if (!s.precheck) continue;
+      const bin = s.precheck.split(/\s+/)[0];
+      expect(bin.startsWith("/")).toBe(true);
+      expect(existsSync(bin)).toBe(true);
     }
   });
   test("geo-dev waits for its background Workflow (else -p kills it at 600s)", () => {

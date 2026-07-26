@@ -39,6 +39,19 @@ const DRY_RUN = process.argv.includes("--dry-run");
 // Pure core (unit-tested in run-automation.test.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * Classify a precheck's exit code. A precheck is a change-gate: exit 0 ⇒ run, a *semantic*
+ * non-zero (e.g. geo-dev-precheck's 10 = "nothing changed") ⇒ intentional skip. But 126/127 mean
+ * the shell could not execute the command at all (not-executable / command-not-found) — that is a
+ * broken invocation, NOT a skip signal, and must fail loudly instead of masquerading as "nothing
+ * to do". (This class of masking hid geo-dev's 127 for a week; see automations.config.ts BUN_BIN.)
+ */
+export function classifyPrecheckExit(exitCode: number | null): "run" | "skip" | "error" {
+  if (exitCode === 0) return "run";
+  if (exitCode === 126 || exitCode === 127) return "error";
+  return "skip";
+}
+
 /** Dedup marker for "now" at the configured granularity. Empty string ⇒ dedup disabled. */
 export function dedupMarker(kind: AutomationSpec["dedup"], iso: string): string {
   if (kind === "none") return "";
@@ -138,10 +151,20 @@ function main(): number {
     return 1;
   }
 
-  // Precheck (optional): non-zero ⇒ intentional skip (e.g. geo-dev "nothing changed").
+  // Precheck (optional): exit 0 ⇒ run, semantic non-zero ⇒ intentional skip, 126/127 ⇒ the
+  // command could not execute → fail loudly (do NOT silently skip — that hid geo-dev for a week).
   if (spec.precheck) {
     const pc = Bun.spawnSync(["bash", "-lc", spec.precheck], { cwd: spec.workdir, stdout: "pipe", stderr: "pipe" });
-    if (pc.exitCode !== 0) {
+    const verdict = classifyPrecheckExit(pc.exitCode);
+    if (verdict === "error") {
+      const detail = pc.stderr.toString().trim().split("\n").slice(-1)[0] || "";
+      log(`ERROR: precheck could not execute (exit ${pc.exitCode}) — aborting. ${detail}`);
+      if (spec.alertOnFail && !DRY_RUN) {
+        void sendTelegram(spec.label, `precheck could not execute (exit ${pc.exitCode}): \`${spec.precheck}\``);
+      }
+      return 1;
+    }
+    if (verdict === "skip") {
       log(`SKIP — precheck exited ${pc.exitCode} (intentional skip)`);
       return 0;
     }
