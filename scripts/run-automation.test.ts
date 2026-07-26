@@ -105,10 +105,13 @@ describe("automations.config integrity", () => {
       expect(existsSync(bin)).toBe(true);
     }
   });
-  test("geo-dev waits for its background Workflow (else -p kills it at 600s)", () => {
-    const geoDev = AUTOMATIONS["geo-dev"];
-    expect(geoDev.waitForBackgroundTasks).toBe(true);
-    // and gives the long workflow more than the default cap
-    expect(geoDev.timeoutMs).toBeGreaterThan(45 * 60 * 1000);
+  test("geo-dev + geo-digest wait for their background Workflow (else -p kills it at 600s)", () => {
+    // Both invoke the Workflow tool as a detached task. Missing the flag makes claude -p SIGKILL
+    // the workflow at 600s and exit "done OK" having produced nothing — the W30 digest failure.
+    for (const id of ["geo-dev", "geo-digest"]) {
+      const s = AUTOMATIONS[id];
+      expect(s.waitForBackgroundTasks).toBe(true);
+      expect(s.timeoutMs).toBeGreaterThan(45 * 60 * 1000); // long workflow needs > default cap
+    }
   });
 });
