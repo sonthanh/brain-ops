@@ -40,6 +40,18 @@ export interface AutomationSpec {
   /** Telegram-alert on non-zero claude exit (uses ~/.config/brain/env creds). */
   alertOnFail: boolean;
   /**
+   * Absolute path of the artifact this run MUST produce, resolved at check time (so it can
+   * depend on the current ISO week). When set, the runner treats "exit 0 but file absent" as a
+   * SILENT FAILURE: it alerts and withholds the dedup marker so the catch-up slot still fires.
+   * Exit 0 alone is not proof of work — `claude -p` exits 0 after killing background workflows
+   * at its ceiling, and an agent that stops early exits 0 too (W30, 2026-07-26).
+   *
+   * Receives the current ISO week ("2026-W31") so week-scoped outputs can name their own path.
+   * Declared as a callback rather than importing the week helper, which would make this data
+   * module depend on the logic module that imports it.
+   */
+  producesFile?: (isoWeek: string) => string;
+  /**
    * Hard wall-clock cap (ms) for the claude run — the runner SIGKILLs past it. The reaper only
    * matches interactive `claude /goal`, NOT `claude … -p /goal`, so without this a hung headless
    * run would idle forever and stack across daily fires. Defaults to DEFAULT_TIMEOUT_MS.
@@ -209,9 +221,15 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
     // 19-source scan + 2–4 long essays can run well past the 45m default, so cap at 90m like geo-dev.
     waitForBackgroundTasks: true,
     timeoutMs: 90 * 60 * 1000,
+    // The brief is the run's minimum viable output (SKILL Phase 5) — if it is absent the run
+    // did not happen, whatever the exit code said. Guards the second half of the W30 failure:
+    // the 600s kill produced a scan-log and nothing else, yet reported "done OK" and wrote the
+    // week marker, which suppressed the Sunday catch-up that would have recovered the week.
+    producesFile: (isoWeek) =>
+      `${BRAIN}/personal/research/geopolitical-preparedness/weekly/${isoWeek}/brief.md`,
     pluginDirs: [GEO], // runs from BRAIN workdir → needs explicit geo-plugin load
     prompt:
-      "/goal Run the weekly /geo-digest for the current ISO week to completion on the brain vault. Vault root = /Users/thanhdo/work/brain. vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md (skill Step 0 reads it). Runs locally — NO vault bootstrap. Read the /geo-digest skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-digest/SKILL.md and execute ALL phases exactly, in order: Step 0 resolve config + started breadcrumb to daily/skill-outcomes/geo-digest.log; Phase 1 load state; Phase 2 scan sources (web/rss/x/fb-manual) for the past 7 days (WebSearch/WebFetch only); Phase 3 tag + cluster via the 6 framework dimensions; Phase 4 scorecard (US/CN/VN/CH x 8 determinants + internal stage + weekly delta); Phase 5 exec brief (~600 words) to weekly/YYYY-WW/brief.md; Phase 6 2-4 detail essays (1500-3000 words, Ly Xuan Hai analytical voice); Phase 7 (top-level — AFTER the render workflow returns; the workflow only RENDERS the email, delivery from inside it silently no-ops because sub-agents lack the Gmail MCP) deliver via the SKILL's delivery ladder: if ~/work/brain-os-plugin/skills/gmail/.credentials.json exists, real-send via the gmail-skill Gmail API; ELSE create a Gmail DRAFT via the create_draft MCP tool (the claude.ai Gmail MCP is draft-only, no send tool) so the digest is one click from sending — a draft is a valid degraded delivery, log it as drafted/partial to daily/skill-outcomes/geo-digest-email-failures.log, do NOT set last_email_sent; Phase 8 file the /geo-quiz grill task as a GitHub issue on sonthanh/ai-brain; Phase 9 update state.json cursors, commit, push. Rules: NEVER edit installed plugin copies; light-week fallback (fewer than 2 essay-worthy themes → exec brief only); VN quotes verbatim with English gloss; email failure one-shot, do NOT retry; append exactly one terminal {pass|partial|fail} row to daily/skill-outcomes/geo-digest.log. Done = weekly/{ISO-WEEK}/brief.md exists, a terminal {pass|partial|fail} row is in the log, the commit is pushed, AND the brief email has been sent by THIS top-level session (or, if Gmail is genuinely unavailable, a delivery-failure line logged to daily/skill-outcomes/geo-digest-email-failures.log — email failure stays partial, never blocks). Do not stop until all four are confirmed.",
+      "/goal Run the weekly /geo-digest for the current ISO week to completion on the brain vault. Vault root = /Users/thanhdo/work/brain. vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md (skill Step 0 reads it). Runs locally — NO vault bootstrap. Read the /geo-digest skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-digest/SKILL.md and execute ALL phases exactly, in order: Step 0 resolve config + started breadcrumb to daily/skill-outcomes/geo-digest.log; Phase 1 load state; Phase 2 scan sources (web/rss/x/fb-manual) for the past 7 days (WebSearch/WebFetch only); Phase 3 tag + cluster via the 6 framework dimensions; Phase 4 scorecard (US/CN/VN/CH x 8 determinants + internal stage + weekly delta); Phase 5 exec brief (~600 words) to weekly/YYYY-WW/brief.md; Phase 6 2-4 detail essays (1500-3000 words, Ly Xuan Hai analytical voice); Phase 7 (top-level — AFTER the render workflow returns; the workflow only RENDERS the email, delivery from inside it silently no-ops because sub-agents lack the Gmail MCP) deliver per the SKILL: build the page with `bun run /Users/thanhdo/work/brain-geo-analysis-plugin/scripts/brief-to-artifact.ts <week-dir> --out /tmp/geo-page-{ISO-WEEK}.html`, publish it with the Artifact tool if that tool is available (note page=skipped in the outcome args if not), then REAL-SEND via `bun run /Users/thanhdo/work/brain-os-plugin/skills/gmail/scripts/send-email.ts --to sonthanhdo2004@gmail.com --subject <ascii-subject> --html <html-body> --text <text-body>` — a short link email when a page URL exists, the full rendered body otherwise. NEVER create a Gmail draft: the user has ruled drafts out, a draft is not delivery, and the draft-only Gmail MCP path is retired. If the send exits non-zero, log the failure to daily/skill-outcomes/geo-digest-email-failures.log and leave last_email_sent untouched; Phase 8 file the /geo-quiz grill task as a GitHub issue on sonthanh/ai-brain; Phase 9 update state.json cursors, commit, push. Rules: NEVER edit installed plugin copies; light-week fallback (fewer than 2 essay-worthy themes → exec brief only); VN quotes verbatim with English gloss; email failure one-shot, do NOT retry; append exactly one terminal {pass|partial|fail} row to daily/skill-outcomes/geo-digest.log. Done = weekly/{ISO-WEEK}/brief.md exists, a terminal {pass|partial|fail} row is in the log, the commit is pushed, AND the brief email has been sent by THIS top-level session (or, if Gmail is genuinely unavailable, a delivery-failure line logged to daily/skill-outcomes/geo-digest-email-failures.log — email failure stays partial, never blocks). Do not stop until all four are confirmed.",
   },
 
   "geo-improve": {

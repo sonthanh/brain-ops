@@ -67,6 +67,28 @@ export function isoWeekMarker(iso: string): string {
   return `${weekYear}-W${String(week).padStart(2, "0")}`;
 }
 
+export type RunOutcome = "ok" | "timeout" | "silent-failure" | "error";
+
+/**
+ * Classify a finished `claude -p` run. Exit 0 is necessary but NOT sufficient: the CLI exits 0
+ * after SIGKILLing background workflows at its ceiling, and an agent that stops early exits 0
+ * too — so a run can report success having produced nothing. When the spec declares an expected
+ * artifact and it is absent, that is a `silent-failure`, which must NOT write the dedup marker
+ * (otherwise the week is marked done and the catch-up slot never fires — W30, 2026-07-26).
+ */
+export function classifyRunOutcome(r: {
+  exitCode: number | null;
+  signalCode: string | null;
+  /** undefined ⇒ the spec declares no artifact, so this check is skipped. */
+  artifactExists?: boolean;
+}): RunOutcome {
+  const timedOut = r.signalCode === "SIGKILL" || (r.exitCode === null && r.signalCode != null);
+  if (timedOut) return "timeout";
+  if (r.exitCode !== 0) return "error";
+  if (r.artifactExists === false) return "silent-failure";
+  return "ok";
+}
+
 /** Dedup marker for "now" at the configured granularity. Empty string ⇒ dedup disabled. */
 export function dedupMarker(kind: AutomationSpec["dedup"], iso: string): string {
   if (kind === "none") return "";
@@ -248,14 +270,28 @@ function main(): number {
   }
   const mins = ((Date.now() - started) / 60000).toFixed(1);
 
-  // A timeout kill surfaces as a signal (no clean exit code) — treat as a failure, not success.
-  const timedOut = proc.signalCode === "SIGKILL" || (proc.exitCode === null && proc.signalCode != null);
-  if (proc.exitCode === 0 && !timedOut) {
+  // W30 (2026-07-26): scan-log written, no brief, "done OK in 12.2m", dedup marker written,
+  // Sunday catch-up suppressed. Exit 0 is not proof of work — check the artifact too.
+  const expectedArtifact = spec.producesFile?.(isoWeekMarker(new Date().toISOString()));
+  const outcome = classifyRunOutcome({
+    exitCode: proc.exitCode,
+    signalCode: proc.signalCode ?? null,
+    artifactExists: expectedArtifact ? existsSync(expectedArtifact) : undefined,
+  });
+
+  if (outcome === "ok") {
     if (marker) writeFileSync(lastRunFile, marker);
     log(`=== ${spec.label} done OK in ${mins}m ===`);
     return 0;
   }
-  const why = timedOut ? `TIMED OUT after ${mins}m (cap ${(timeoutMs / 60000).toFixed(0)}m)` : `exit=${proc.exitCode}`;
+  // Deliberately do NOT write the dedup marker on any failure — a silent-success run must stay
+  // eligible for the catch-up slot instead of being marked done for the week.
+  const why =
+    outcome === "silent-failure"
+      ? `SILENT FAILURE — exited 0 in ${mins}m but produced no ${expectedArtifact}`
+      : outcome === "timeout"
+        ? `TIMED OUT after ${mins}m (cap ${(timeoutMs / 60000).toFixed(0)}m)`
+        : `exit=${proc.exitCode}`;
   log(`=== ${spec.label} FAILED ${why} ===`);
   if (spec.alertOnFail && !DRY_RUN) void sendTelegram(spec.label, `\`claude -p\` ${why}. Check \`${logFile}\`.`);
   return proc.exitCode || 1;

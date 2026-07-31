@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { classifyPrecheckExit, dedupMarker, isoWeekMarker, quotaDecision } from "./run-automation.ts";
+import {
+  classifyPrecheckExit,
+  classifyRunOutcome,
+  dedupMarker,
+  isoWeekMarker,
+  quotaDecision,
+} from "./run-automation.ts";
 import { AUTOMATIONS } from "./automations.config.ts";
 
 describe("classifyPrecheckExit", () => {
@@ -113,5 +119,60 @@ describe("automations.config integrity", () => {
       expect(s.waitForBackgroundTasks).toBe(true);
       expect(s.timeoutMs).toBeGreaterThan(45 * 60 * 1000); // long workflow needs > default cap
     }
+  });
+});
+
+// ── silent-failure detection (the W30 2026-07-26 hole) ──────────────────────
+describe("classifyRunOutcome", () => {
+  test("exit 0 with the artifact present is ok", () => {
+    expect(classifyRunOutcome({ exitCode: 0, signalCode: null, artifactExists: true })).toBe("ok");
+  });
+
+  test("exit 0 with no artifact check declared is ok", () => {
+    expect(classifyRunOutcome({ exitCode: 0, signalCode: null })).toBe("ok");
+  });
+
+  // The actual W30 shape: claude -p killed the background workflow at its 600s ceiling,
+  // exited 0 after 12.2m, and left the week with a scan-log but no brief.
+  test("exit 0 with the artifact MISSING is a silent failure, not ok", () => {
+    expect(classifyRunOutcome({ exitCode: 0, signalCode: null, artifactExists: false })).toBe(
+      "silent-failure",
+    );
+  });
+
+  test("a SIGKILL timeout outranks the artifact check", () => {
+    expect(
+      classifyRunOutcome({ exitCode: null, signalCode: "SIGKILL", artifactExists: true }),
+    ).toBe("timeout");
+  });
+
+  test("a non-zero exit is an error even when the artifact exists", () => {
+    expect(classifyRunOutcome({ exitCode: 1, signalCode: null, artifactExists: true })).toBe(
+      "error",
+    );
+  });
+
+  test("a signal with no exit code is a timeout", () => {
+    expect(classifyRunOutcome({ exitCode: null, signalCode: "SIGTERM" })).toBe("timeout");
+  });
+});
+
+describe("geo-digest spec wiring", () => {
+  test("declares the brief as its required artifact, week-scoped", () => {
+    const spec = AUTOMATIONS["geo-digest"];
+    expect(spec.producesFile).toBeDefined();
+    const p = spec.producesFile!("2026-W31");
+    expect(p).toEndWith("/weekly/2026-W31/brief.md");
+  });
+
+  test("waits for background workflows — without this the 600s ceiling kills the run", () => {
+    expect(AUTOMATIONS["geo-digest"].waitForBackgroundTasks).toBe(true);
+  });
+
+  test("no longer instructs the agent to fall back to a Gmail draft", () => {
+    const p = AUTOMATIONS["geo-digest"].prompt;
+    expect(p).not.toContain("create_draft");
+    expect(p).toContain("NEVER create a Gmail draft");
+    expect(p).toContain("send-email.ts");
   });
 });
