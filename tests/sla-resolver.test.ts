@@ -203,6 +203,34 @@ describe("resolveSlaLedger — 4-guard rule", () => {
     expect(result.ledger.breached).toHaveLength(1);
   });
 
+  test("the SLA inbound itself is never a reply candidate (minute-truncated received_at)", () => {
+    // Production 2026-08-03: every stuck row logged `guard #2 fail — reply
+    // from=<the partner> classified as external` naming the SLA inbound's own
+    // sender. Cause: the ledger stores received_at at minute precision
+    // (`2026-04-18 13:15`) while the Gmail Date header carries seconds
+    // (`13:15:54`), so the tracked message sorted 54s "after" its own row and
+    // was evaluated as a reply. The honest diagnosis is guard #1 — no reply.
+    const ledger = { ...emptyLedger(), breached: [breachedRow()] };
+    const result = resolveSlaLedger({
+      ledger,
+      threads: [thread(MESSAGE_ID, [
+        {
+          message_id: MESSAGE_ID,
+          from: EXTERNAL_ADDR,
+          to: "business@emvn.co",
+          date: "2026-04-18T13:15:54Z",
+        },
+        // No reply.
+      ])],
+      identities: IDENTITIES,
+      now: NOW,
+    });
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.guardFailures).toHaveLength(1);
+    expect(result.guardFailures[0]!.guardNumber).toBe(1);
+    expect(result.guardFailures[0]!.rawReason).toContain("no reply");
+  });
+
   test("guard #2 fail: reply from external sender → still breached", () => {
     const ledger = { ...emptyLedger(), breached: [breachedRow()] };
     const result = resolveSlaLedger({

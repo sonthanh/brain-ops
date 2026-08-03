@@ -1,6 +1,7 @@
 import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { detectSlaPrefilter } from "./lib/sla-prefilter.ts";
+import { parseIdentities } from "./lib/identities.ts";
 import type { Email, SlaThread, SlaThreadMessage } from "./lib/types.ts";
 import type { gmail_v1 } from "@googleapis/gmail";
 
@@ -337,22 +338,59 @@ export async function fetchSlaThreads(options: {
   return threads;
 }
 
+/**
+ * Load team domains for the cross-thread reply search. Returns undefined when
+ * no rules path is given or the file can't be parsed — the fetch then degrades
+ * to same-thread-only instead of failing the whole step (this same run also
+ * feeds the classifier, which must not be blocked by a rules-file problem).
+ */
+export function loadTeamDomains(rulesPath: string | undefined): Set<string> | undefined {
+  if (!rulesPath) {
+    console.error(
+      "[sla-threads] no --gmail-rules — cross-thread reply search DISABLED " +
+        "(team replies sent outside the SLA thread will read as unanswered)",
+    );
+    return undefined;
+  }
+  try {
+    const { teamDomains } = parseIdentities(rulesPath);
+    console.error(`[sla-threads] cross-thread search enabled for ${teamDomains.size} team domain(s)`);
+    return teamDomains;
+  } catch (e) {
+    console.error(`[sla-threads] cross-thread search DISABLED — ${(e as Error).message}`);
+    return undefined;
+  }
+}
+
 // CLI entry point — only runs when executed directly
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
   const slaLedgerArg = args.find((a) => a.startsWith("--sla-ledger="));
   const slaLedgerPath = slaLedgerArg?.split("=")[1];
+  const gmailRulesArg = args.find((a) => a.startsWith("--gmail-rules="));
+  const gmailRulesPath = gmailRulesArg?.split("=")[1];
 
   fetchUnreadEmails({ dryRun })
     .then(async (emails) => {
       console.log(JSON.stringify(emails, null, 2));
 
-      // Fetch SLA threads if ledger path provided
+      // Fetch SLA threads if ledger path provided.
+      //
+      // teamDomains MUST be passed: without it fetchSlaThreads skips the
+      // cross-thread reply search entirely, so a team reply the partner got in
+      // a different thread (Zendesk forks a new threadId per response;
+      // legal/accounting often reply from a forked thread) is invisible and
+      // the row stays breached forever. The gmail-triage workflow reuses this
+      // exact JSON for the authoritative resolver step — production ran
+      // without it from the feature's introduction until 2026-08-03, which is
+      // why 6 of 23 ledger rows sat falsely breached.
       if (slaLedgerPath) {
+        const teamDomains = loadTeamDomains(gmailRulesPath);
         const slaThreads = await fetchSlaThreads({
           ledgerPath: slaLedgerPath,
           dryRun,
+          ...(teamDomains ? { teamDomains } : {}),
         });
         writeFileSync("/tmp/sla-threads.json", JSON.stringify(slaThreads, null, 2));
         console.error(`Fetched ${slaThreads.length} SLA threads`);

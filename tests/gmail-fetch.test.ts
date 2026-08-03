@@ -1,7 +1,7 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fetchSlaThreads, fetchUnreadEmails } from "../src/gmail-fetch.ts";
+import { fetchSlaThreads, fetchUnreadEmails, loadTeamDomains } from "../src/gmail-fetch.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-gmail-fetch");
 
@@ -84,6 +84,72 @@ Open: 0 | Breached: 1 (fast: 0, normal: 1, slow: 0)
         // an ID. The dry-run path doesn't expose the ID list directly,
         // but the count itself (2, not 3) tells us no spurious date got
         // collected.
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  describe("loadTeamDomains — cross-thread search wiring", () => {
+    // Production regression 2026-08-03: the CLI entry point called
+    // fetchSlaThreads WITHOUT teamDomains, so `cross_thread_replies` was never
+    // produced in the gmail-triage workflow and the resolver could only see
+    // same-thread messages. 6 of 23 ledger rows sat falsely breached — the
+    // team HAD replied, just in a forked/Zendesk thread. These tests pin the
+    // wiring the CLI depends on.
+    let rulesPath: string;
+
+    beforeEach(() => {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+      mkdirSync(TEST_DIR, { recursive: true });
+      rulesPath = join(TEST_DIR, "gmail-rules.md");
+    });
+
+    afterEach(() => {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+    });
+
+    test("returns team domains when the rules file parses", () => {
+      writeFileSync(rulesPath, `# Gmail Rules
+
+### Send-as identities
+- thanh@emvn.co
+
+### Team domains (internal)
+- @emvn.co
+- @musicmaster.io
+`);
+      const spy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const domains = loadTeamDomains(rulesPath);
+        expect(domains).toEqual(new Set(["emvn.co", "musicmaster.io"]));
+        const logs = spy.mock.calls.map((a) => a.join(" "));
+        expect(logs.some((l) => l.includes("cross-thread search enabled"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test("no rules path → undefined + explicit DISABLED warning (never silent)", () => {
+      const spy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(loadTeamDomains(undefined)).toBeUndefined();
+        const logs = spy.mock.calls.map((a) => a.join(" "));
+        expect(logs.some((l) => l.includes("cross-thread reply search DISABLED"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test("unparseable rules file degrades to same-thread instead of throwing", () => {
+      // The same fetch run feeds the classifier — a rules-file problem must
+      // not fail the whole step.
+      writeFileSync(rulesPath, "# Gmail Rules\n\nno identity sections here\n");
+      const spy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(loadTeamDomains(rulesPath)).toBeUndefined();
+        const logs = spy.mock.calls.map((a) => a.join(" "));
+        expect(logs.some((l) => l.includes("DISABLED"))).toBe(true);
       } finally {
         spy.mockRestore();
       }

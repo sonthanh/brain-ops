@@ -9,6 +9,15 @@ inputs:
     description: Path to sla-open.md in the checked-out vault repo (for resolution detection thread fetching)
     required: false
     default: ""
+  gmail-rules-path:
+    description: >-
+      Path to gmail-rules.md in the checked-out vault repo. Supplies the team
+      domains for the cross-thread reply search — team replies the partner
+      received in a DIFFERENT thread (Zendesk ticket forks, legal/accounting
+      forked threads). Without it the fetch is same-thread only and those rows
+      stay falsely breached.
+    required: false
+    default: ""
   dry-run:
     description: Run without making API calls
     required: false
@@ -39,6 +48,7 @@ runs:
       env:
         GMAIL_CREDENTIALS_PATH: ${{ inputs.credentials-path }}
         SLA_LEDGER_PATH: ${{ inputs.sla-ledger-path }}
+        GMAIL_RULES_PATH: ${{ inputs.gmail-rules-path }}
         ACTION_PATH: ${{ github.action_path }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
@@ -46,6 +56,9 @@ runs:
         if [ "$DRY_RUN" = "true" ]; then FLAGS="--dry-run"; fi
         if [ -n "$SLA_LEDGER_PATH" ] && [ -f "$SLA_LEDGER_PATH" ]; then
           FLAGS="$FLAGS --sla-ledger=$SLA_LEDGER_PATH"
+        fi
+        if [ -n "$GMAIL_RULES_PATH" ] && [ -f "$GMAIL_RULES_PATH" ]; then
+          FLAGS="$FLAGS --gmail-rules=$GMAIL_RULES_PATH"
         fi
         node "${ACTION_PATH}/dist/gmail-fetch.mjs" $FLAGS > /tmp/emails.json
         # SLA threads file is produced as side-effect when --sla-ledger is set

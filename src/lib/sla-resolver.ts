@@ -773,6 +773,14 @@ function evaluateGuards(
 
   for (const { msg, ms } of withMs) {
     if (!Number.isFinite(ms) || ms <= receivedAtMs) continue;
+    // The ledger stores `received_at` at minute precision while the Gmail Date
+    // header carries seconds, so the SLA inbound itself sorts up to 59s AFTER
+    // its own row timestamp and gets evaluated as a reply candidate. That
+    // reported a bogus guard #2 failure ("reply from=<the partner> classified
+    // as external") on threads that in fact have no reply at all — masking the
+    // accurate guard #1 "no reply after ..." diagnosis. Skip the tracked
+    // message by id.
+    if (row.messageId && msg.message_id === row.messageId) continue;
     anyAfter = true;
     latestCandidate = { date: msg.date, from: msg.from, to: msg.to };
 
