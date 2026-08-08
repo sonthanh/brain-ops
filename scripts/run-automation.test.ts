@@ -26,9 +26,11 @@ describe("dedupMarker", () => {
   test("none → empty (disabled)", () => expect(dedupMarker("none", iso)).toBe(""));
 });
 
-describe("isoWeekMarker (geo-digest Sat+Sun catch-up idempotency)", () => {
+describe("isoWeekMarker (Sat+Sun catch-up idempotency)", () => {
   // The whole point: Saturday's primary fire and Sunday's catch-up must produce the SAME marker so
   // a successful Saturday run makes Sunday dedup-skip. W30 2026 = Mon 07-20 … Sun 07-26.
+  // dedup:"week" has no local consumer since geo-digest moved to GitHub Actions (2026-08-08);
+  // these stay because the marker is public API and the next weekly automation will want it.
   test("Saturday and the next Sunday collapse to one marker", () => {
     expect(isoWeekMarker("2026-07-25T06:00:00Z")).toBe("2026-W30"); // Sat
     expect(isoWeekMarker("2026-07-26T07:00:00Z")).toBe("2026-W30"); // Sun (same ISO week)
@@ -111,10 +113,12 @@ describe("automations.config integrity", () => {
       expect(existsSync(bin)).toBe(true);
     }
   });
-  test("geo-dev + geo-digest wait for their background Workflow (else -p kills it at 600s)", () => {
-    // Both invoke the Workflow tool as a detached task. Missing the flag makes claude -p SIGKILL
+  test("geo-dev waits for its background Workflow (else -p kills it at 600s)", () => {
+    // It invokes the Workflow tool as a detached task. Missing the flag makes claude -p SIGKILL
     // the workflow at 600s and exit "done OK" having produced nothing — the W30 digest failure.
-    for (const id of ["geo-dev", "geo-digest"]) {
+    // geo-digest carried the same requirement; it now lives in ai-brain's geo-digest.yml, which
+    // sets CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 directly on the step.
+    for (const id of ["geo-dev"]) {
       const s = AUTOMATIONS[id];
       expect(s.waitForBackgroundTasks).toBe(true);
       expect(s.timeoutMs).toBeGreaterThan(45 * 60 * 1000); // long workflow needs > default cap
@@ -157,22 +161,16 @@ describe("classifyRunOutcome", () => {
   });
 });
 
-describe("geo-digest spec wiring", () => {
-  test("declares the brief as its required artifact, week-scoped", () => {
-    const spec = AUTOMATIONS["geo-digest"];
-    expect(spec.producesFile).toBeDefined();
-    const p = spec.producesFile!("2026-W31");
-    expect(p).toEndWith("/weekly/2026-W31/brief.md");
-  });
+// The "geo-digest spec wiring" suite lived here until 2026-08-08. The job moved to GitHub
+// Actions (sonthanh/ai-brain .github/workflows/geo-digest.yml) and its three invariants moved
+// with it as workflow steps: the brief-exists artifact check ("Verify the brief was actually
+// produced"), the background-workflow ceiling escape (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0),
+// and the no-Gmail-draft rule (still spelled out verbatim in the step's prompt).
 
-  test("waits for background workflows — without this the 600s ceiling kills the run", () => {
-    expect(AUTOMATIONS["geo-digest"].waitForBackgroundTasks).toBe(true);
-  });
-
-  test("no longer instructs the agent to fall back to a Gmail draft", () => {
-    const p = AUTOMATIONS["geo-digest"].prompt;
-    expect(p).not.toContain("create_draft");
-    expect(p).toContain("NEVER create a Gmail draft");
-    expect(p).toContain("send-email.ts");
+describe("no automation still owns a job that moved to CI", () => {
+  test("geo-digest is gone from the local registry — one home, no double-fire", () => {
+    // Leaving it here scheduled would fire the local Saturday job 17 minutes before the cloud
+    // one, burning the personal Claude quota it was moved off in the first place.
+    expect(AUTOMATIONS["geo-digest"]).toBeUndefined();
   });
 });

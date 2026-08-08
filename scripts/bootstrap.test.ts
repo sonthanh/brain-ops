@@ -69,7 +69,8 @@ describe("allLabels", () => {
     expect(labels).toContain("com.brain.gmail-triage-watchdog");
     expect(labels).toContain("com.brain.triage");
     expect(labels.every((l) => l.startsWith("com.brain."))).toBe(true);
-    // 10 agent automations + 5 support jobs
-    expect(labels.length).toBe(15);
+    // 9 agent automations + 5 support jobs. Was 10 until 2026-08-08, when geo-digest
+    // moved to GitHub Actions (ai-brain .github/workflows/geo-digest.yml).
+    expect(labels.length).toBe(14);
   });
 });

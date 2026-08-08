@@ -196,41 +196,16 @@ export const AUTOMATIONS: Record<string, AutomationSpec> = {
       "/goal Run the daily /geo-dev self-development loop to completion. Plugin source = /Users/thanhdo/work/brain-geo-analysis-plugin. Vault + gh_task_repo are in ~/.brain-os/brain-os.config.md. Runs locally — no vault bootstrap. Read the skill spec at skills/geo-dev/SKILL.md and follow every phase exactly. The Phase-0 change-gate has already passed (precheck) — invoke the Workflow tool with scriptPath ABSOLUTE /Users/thanhdo/work/brain-geo-analysis-plugin/workflows/geo-dev.mjs and args {}; do NOT poll it with Bash/Monitor loops, wait for completion and read its returned summary. After it returns, advance the cursor: bun run scripts/geo-dev-precheck.ts --save, and confirm the Workflow wrote the report + the terminal outcome-log line; if it crashed before the Report phase, write a fail outcome line yourself (reason=workflow-crash). Rules: edit ONLY this source repo, never installed plugin copies; issues → sonthanh/ai-brain (labels geo-dev, status:ready), NEVER the plugin repo; every decided gap lands as a PR for human merge, never force-push to main; content gaps (essays/sources/prompts/framework) are OUT of scope — route to /geo-improve; zero decided gaps is a valid, SUCCESSFUL day. Done = an outcome-log row for today exists in {vault}/daily/skill-outcomes/geo-dev.log AND is committed+pushed to the vault. Do not stop until confirmed.",
   },
 
-  "geo-digest": {
-    id: "geo-digest",
-    label: "Geo digest",
-    model: "opus",
-    workdir: BRAIN,
-    // Saturday 08:00 primary + Sunday 08:00 catch-up. dedup:"week" makes the pair idempotent —
-    // the marker is written only on a clean exit, so a successful Saturday run makes Sunday skip
-    // (same ISO-week marker), while a Saturday HARD crash (e.g. the W30 "connection closed" API
-    // drop) leaves no marker and Sunday re-runs the week. A partial/email-failed Saturday still
-    // exits 0 → marker written → no Sunday re-run (email failure is non-blocking by design).
-    schedule: [
-      { Hour: 8, Minute: 0, Weekday: 6 }, // Saturday (primary)
-      { Hour: 8, Minute: 0, Weekday: 0 }, // Sunday (catch-up if Saturday hard-crashed)
-    ],
-    dedup: "week",
-    quotaGate: true,
-    alertOnFail: true,
-    // geo-digest invokes the Workflow tool (workflows/geo-digest.mjs: per-source scan fan-out →
-    // reduce → brief → essays → deliver) as a detached background task — same shape as geo-dev.
-    // Without waitForBackgroundTasks, claude -p SIGKILLs the workflow at the 600s ceiling and exits
-    // "done OK" while having produced NOTHING (empty weekly/ dir, no brief, no essays, no ledger
-    // row, no email). That is exactly what happened on the 2026-07-26 W30 rerun. Wait for it; the
-    // 19-source scan + 2–4 long essays can run well past the 45m default, so cap at 90m like geo-dev.
-    waitForBackgroundTasks: true,
-    timeoutMs: 90 * 60 * 1000,
-    // The brief is the run's minimum viable output (SKILL Phase 5) — if it is absent the run
-    // did not happen, whatever the exit code said. Guards the second half of the W30 failure:
-    // the 600s kill produced a scan-log and nothing else, yet reported "done OK" and wrote the
-    // week marker, which suppressed the Sunday catch-up that would have recovered the week.
-    producesFile: (isoWeek) =>
-      `${BRAIN}/personal/research/geopolitical-preparedness/weekly/${isoWeek}/brief.md`,
-    pluginDirs: [GEO], // runs from BRAIN workdir → needs explicit geo-plugin load
-    prompt:
-      "/goal Run the weekly /geo-digest for the current ISO week to completion on the brain vault. Vault root = /Users/thanhdo/work/brain. vault_path + gh_task_repo are in ~/.brain-os/brain-os.config.md (skill Step 0 reads it). Runs locally — NO vault bootstrap. Read the /geo-digest skill spec at /Users/thanhdo/work/brain-geo-analysis-plugin/skills/geo-digest/SKILL.md and execute ALL phases exactly, in order: Step 0 resolve config + started breadcrumb to daily/skill-outcomes/geo-digest.log; Phase 1 load state; Phase 2 scan sources (web/rss/x/fb-manual) for the past 7 days (WebSearch/WebFetch only); Phase 3 tag + cluster via the 6 framework dimensions; Phase 4 scorecard (US/CN/VN/CH x 8 determinants + internal stage + weekly delta); Phase 5 exec brief to weekly/YYYY-WW/brief.md — it MUST contain ALL of these sections: Scorecard, Events this week (each event's source as a markdown link taken from the scan-log), Connecting the dots, Causal chain (a ```mermaid flowchart LR cascade, cross-source edges only, terminating at VN/CH exposure), Watch next, Deep essays this week, Sources scanned. Verify with: bun run /Users/thanhdo/work/brain-geo-analysis-plugin/scripts/check-brief.ts <week-dir> — it must exit 0 before you continue; Phase 6 2-4 detail essays (1500-3000 words, Ly Xuan Hai analytical voice); Phase 7 (top-level — AFTER the render workflow returns; the workflow only RENDERS the email, delivery from inside it silently no-ops because sub-agents lack the Gmail MCP) deliver per the SKILL: build the page with `bun run /Users/thanhdo/work/brain-geo-analysis-plugin/scripts/brief-to-artifact.ts <week-dir> --out /tmp/geo-page-{ISO-WEEK}.html`, publish it with the Artifact tool if that tool is available (note page=skipped in the outcome args if not), then REAL-SEND via `bun run /Users/thanhdo/work/brain-os-plugin/skills/gmail/scripts/send-email.ts --to sonthanhdo2004@gmail.com --subject <ascii-subject> --html <html-body> --text <text-body>` — a short link email when a page URL exists, the full rendered body otherwise. NEVER create a Gmail draft: the user has ruled drafts out, a draft is not delivery, and the draft-only Gmail MCP path is retired. If the send exits non-zero, log the failure to daily/skill-outcomes/geo-digest-email-failures.log and leave last_email_sent untouched; Phase 8 file the /geo-quiz grill task as a GitHub issue on sonthanh/ai-brain; Phase 9 update state.json cursors, commit, push. Rules: NEVER edit installed plugin copies; light-week fallback (fewer than 2 essay-worthy themes → exec brief only); VN quotes verbatim with English gloss; email failure one-shot, do NOT retry; append exactly one terminal {pass|partial|fail} row to daily/skill-outcomes/geo-digest.log. Done = weekly/{ISO-WEEK}/brief.md exists AND check-brief.ts exits 0 on it, a terminal {pass|partial|fail} row is in the log, the commit is pushed, AND the brief email has been sent by THIS top-level session (or, if Gmail is genuinely unavailable, a delivery-failure line logged to daily/skill-outcomes/geo-digest-email-failures.log — email failure stays partial, never blocks). Do not stop until all four are confirmed.",
-  },
+  // "geo-digest" lived here until 2026-08-08. It now runs in GitHub Actions —
+  // sonthanh/ai-brain .github/workflows/geo-digest.yml — because the local job ran as the
+  // personal Claude account and died on "You've hit your session limit" three Saturdays
+  // running (07-26, 07-31, 08-08), throwing away 44–56 min of Opus work each time. The
+  // cloud job bills CLAUDE_CODE_OAUTH_TOKEN_EMVN instead and does not need the laptop awake.
+  // It keeps every gate this entry had: week dedup (an existing brief.md skips the run),
+  // the brief-exists artifact check, the 600s-ceiling escape (CLAUDE_CODE_PRINT_BG_WAIT_
+  // CEILING_MS=0), and a Telegram alert on failure. Deleted rather than left unscheduled so
+  // there is exactly one home; `git show 'HEAD^:scripts/automations.config.ts'` has the
+  // original if it ever needs to come back.
 
   "geo-improve": {
     id: "geo-improve",
