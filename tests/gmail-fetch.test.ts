@@ -1,7 +1,13 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fetchSlaThreads, fetchUnreadEmails, loadTeamDomains } from "../src/gmail-fetch.ts";
+import {
+  SLA_METADATA_HEADERS,
+  fetchSlaThreads,
+  fetchUnreadEmails,
+  loadTeamDomains,
+  toSlaThreadMessage,
+} from "../src/gmail-fetch.ts";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-gmail-fetch");
 
@@ -154,5 +160,76 @@ Open: 0 | Breached: 1 (fast: 0, normal: 1, slow: 0)
         spy.mockRestore();
       }
     });
+  });
+});
+
+describe("toSlaThreadMessage — body text for the semantic-intent re-sweep", () => {
+  // Production regression 2026-08-18: the SLA thread fetch requested only
+  // From/To/Date/Auto-Submitted/X-Original-Sender/Reply-To, so every re-sweep
+  // judgment on an existing ledger row was made without a single character of
+  // message text. The classifier could only see who spoke last, which reads
+  // as "external replied after us" → reply_owed=true forever. Maslin Friedman
+  // (19eed7fe7666540b) and Michael Afanasyev (19f04b83bd2a3cad) sat breached
+  // 55 and 48 business days on threads whose last message closed the loop.
+  test("Subject is requested — without it the classifier has no thread text", () => {
+    expect(SLA_METADATA_HEADERS).toContain("Subject");
+  });
+
+  test("resolver-critical headers survive the shared builder", () => {
+    for (const h of ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"]) {
+      expect(SLA_METADATA_HEADERS).toContain(h);
+    }
+  });
+
+  test("carries subject + snippet through to the classifier payload", () => {
+    const msg = toSlaThreadMessage({
+      id: "m1",
+      snippet: "Thanks — that closes it on our side, no action needed.",
+      payload: {
+        headers: [
+          { name: "From", value: "Maslin Friedman <maslin@starsonicrecords.com>" },
+          { name: "To", value: "license@emvn.co" },
+          { name: "Date", value: "Mon, 22 Jun 2026 04:03:00 +0000" },
+          { name: "Subject", value: "Re: Publishing/Sync in Vietnam" },
+        ],
+      },
+    });
+
+    expect(msg.subject).toBe("Re: Publishing/Sync in Vietnam");
+    expect(msg.snippet).toBe("Thanks — that closes it on our side, no action needed.");
+    expect(msg.message_id).toBe("m1");
+    expect(msg.from).toBe("Maslin Friedman <maslin@starsonicrecords.com>");
+  });
+
+  test("guard fields keep null-vs-empty semantics the resolver depends on", () => {
+    const msg = toSlaThreadMessage({
+      id: "m2",
+      payload: {
+        headers: [
+          { name: "From", value: "team@emvn.co" },
+          { name: "To", value: "ext@x.com" },
+          { name: "Date", value: "Tue, 23 Jun 2026 09:00:00 +0000" },
+          { name: "Auto-Submitted", value: "" },
+          { name: "Reply-To", value: "real@partner.com" },
+        ],
+      },
+    });
+
+    // Empty header → null (absent), not "" — guard #4 reads the raw string.
+    expect(msg.auto_submitted).toBeNull();
+    // Header not present at all → null.
+    expect(msg.x_original_sender).toBeNull();
+    expect(msg.reply_to).toBe("real@partner.com");
+    // Absent subject/snippet are omitted, never emitted as empty keys.
+    expect(msg.subject).toBeUndefined();
+    expect(msg.snippet).toBeUndefined();
+  });
+
+  test("header lookup is case-insensitive (Gmail varies casing)", () => {
+    const msg = toSlaThreadMessage({
+      id: "m3",
+      payload: { headers: [{ name: "subject", value: "lowercase header" }] },
+    });
+    expect(msg.subject).toBe("lowercase header");
   });
 });

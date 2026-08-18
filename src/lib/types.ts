@@ -173,6 +173,20 @@ export interface SlaThreadMessage {
    * address. Null when header absent or empty.
    */
   reply_to: string | null;
+  /**
+   * `Subject` header. NOT read by the deterministic 4-guard resolver — it
+   * exists for the semantic-intent classifier's re-sweep pass. Optional for
+   * backwards compat with older fixtures.
+   */
+  subject?: string;
+  /**
+   * Gmail's ~200-char body preview (`messages.get` / `threads.get` `.snippet`).
+   * Same reason as `subject`: without body text the re-sweep classifier can
+   * only see thread chronology, so "external party spoke last" collapses into
+   * `reply_owed=true` even when their last message closed the loop. Optional
+   * for backwards compat with older fixtures.
+   */
+  snippet?: string;
 }
 
 export interface SlaThread {

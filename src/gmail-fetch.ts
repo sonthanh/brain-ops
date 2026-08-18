@@ -7,6 +7,61 @@ import type { gmail_v1 } from "@googleapis/gmail";
 
 const BATCH_SIZE = 20;
 
+/**
+ * Metadata headers pulled for every message that ends up in an SLA thread.
+ *
+ * `Subject` is here for the semantic-intent classifier, not the deterministic
+ * resolver. Until 2026-08-18 the re-sweep prompt received From/To/Date only,
+ * so it had no text to judge intent on and fell back to chronology — "the
+ * external party sent the last message" became `reply_owed=true` on threads
+ * whose final message closed the loop (Maslin Friedman 19eed7fe7666540b sat
+ * breached 55 business days that way).
+ */
+export const SLA_METADATA_HEADERS = [
+  "From",
+  "To",
+  "Date",
+  "Subject",
+  "Auto-Submitted",
+  "X-Original-Sender",
+  "Reply-To",
+];
+
+/**
+ * Build an SlaThreadMessage from a Gmail message resource fetched with
+ * `format: "metadata"` + SLA_METADATA_HEADERS. Shared by the same-thread walk
+ * and the cross-thread reply search so both carry identical fields.
+ *
+ * Empty strings collapse to null (headers) or are omitted (subject/snippet) —
+ * the resolver's guards distinguish "header absent" from "header present but
+ * empty", and the classifier prompt should not carry empty keys.
+ */
+export function toSlaThreadMessage(
+  msg: gmail_v1.Schema$Message,
+): SlaThreadMessage {
+  const headers = msg.payload?.headers || [];
+  const header = (name: string): string =>
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+
+  const autoSubmitted = header("Auto-Submitted");
+  const xOrigSender = header("X-Original-Sender");
+  const replyTo = header("Reply-To");
+  const subject = header("Subject");
+  const snippet = msg.snippet || "";
+
+  return {
+    ...(msg.id ? { message_id: msg.id } : {}),
+    from: header("From"),
+    to: header("To"),
+    date: header("Date"),
+    auto_submitted: autoSubmitted === "" ? null : autoSubmitted,
+    x_original_sender: xOrigSender === "" ? null : xOrigSender,
+    reply_to: replyTo === "" ? null : replyTo,
+    ...(subject ? { subject } : {}),
+    ...(snippet ? { snippet } : {}),
+  };
+}
+
 export async function fetchUnreadEmails(options: {
   dryRun?: boolean;
   credentialsPath?: string;
@@ -203,23 +258,9 @@ async function fetchCrossThreadReplies(
         userId: "me",
         id,
         format: "metadata",
-        metadataHeaders: ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"],
+        metadataHeaders: SLA_METADATA_HEADERS,
       });
-      const headers = md.data.payload?.headers || [];
-      const header = (name: string): string =>
-        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
-      const autoSub = header("Auto-Submitted");
-      const xOrig = header("X-Original-Sender");
-      const replyTo = header("Reply-To");
-      out.push({
-        message_id: id,
-        from: header("From"),
-        to: header("To"),
-        date: header("Date"),
-        auto_submitted: autoSub === "" ? null : autoSub,
-        x_original_sender: xOrig === "" ? null : xOrig,
-        reply_to: replyTo === "" ? null : replyTo,
-      });
+      out.push({ ...toSlaThreadMessage(md.data), message_id: id });
     } catch (e) {
       console.error(`[cross-thread] fetch failed for ${id}:`, e);
     }
@@ -263,7 +304,7 @@ export async function fetchSlaThreads(options: {
         userId: "me",
         id: msgId,
         format: "metadata",
-        metadataHeaders: ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"],
+        metadataHeaders: SLA_METADATA_HEADERS,
       });
 
       const threadId = msg.data.threadId;
@@ -274,28 +315,13 @@ export async function fetchSlaThreads(options: {
         userId: "me",
         id: threadId,
         format: "metadata",
-        metadataHeaders: ["From", "To", "Date", "Auto-Submitted", "X-Original-Sender", "Reply-To"],
+        metadataHeaders: SLA_METADATA_HEADERS,
       });
 
       const threadMessages: SlaThreadMessage[] = [];
       let slaInbound: SlaThreadMessage | undefined;
       for (const m of thread.data.messages || []) {
-        const headers = m.payload?.headers || [];
-        const header = (name: string): string =>
-          headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
-
-        const autoSubmittedRaw = header("Auto-Submitted");
-        const xOrigSender = header("X-Original-Sender");
-        const replyTo = header("Reply-To");
-        const tm: SlaThreadMessage = {
-          ...(m.id ? { message_id: m.id } : {}),
-          from: header("From"),
-          to: header("To"),
-          date: header("Date"),
-          auto_submitted: autoSubmittedRaw === "" ? null : autoSubmittedRaw,
-          x_original_sender: xOrigSender === "" ? null : xOrigSender,
-          reply_to: replyTo === "" ? null : replyTo,
-        };
+        const tm = toSlaThreadMessage(m);
         threadMessages.push(tm);
         if (m.id === msgId) slaInbound = tm;
       }
