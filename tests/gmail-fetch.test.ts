@@ -6,6 +6,7 @@ import {
   fetchSlaThreads,
   fetchUnreadEmails,
   loadTeamDomains,
+  toEmail,
   toSlaThreadMessage,
 } from "../src/gmail-fetch.ts";
 
@@ -231,5 +232,54 @@ describe("toSlaThreadMessage — body text for the semantic-intent re-sweep", ()
       payload: { headers: [{ name: "subject", value: "lowercase header" }] },
     });
     expect(msg.subject).toBe("lowercase header");
+  });
+});
+
+describe("body_text — full message text for the classifiers (2026-09-26)", () => {
+  // The ~200-char snippet hid the actual ask in 4/4 missed rows of the SLA eval;
+  // the classifiers now also get the sender's own text (quoted history stripped).
+  const b64 = (s: string): string => Buffer.from(s, "utf-8").toString("base64url");
+
+  test("toSlaThreadMessage carries body_text when the payload has a text part", () => {
+    const msg = toSlaThreadMessage({
+      id: "m4",
+      snippet: "Hi, I hope you are well. I'm just following up regarding the royalty payment. We sent the invoice on",
+      payload: {
+        mimeType: "text/plain",
+        headers: [{ name: "From", value: "partner@example.com" }],
+        body: { data: b64("I'm just following up regarding the royalty payment.\nCould you let us know the expected payment date?\n\nOn Tue, Aug 4, 2026 Accounting wrote:\n> report") },
+      },
+    });
+    expect(msg.body_text).toBe("I'm just following up regarding the royalty payment.\nCould you let us know the expected payment date?");
+    expect(msg.snippet).toBeDefined();
+  });
+
+  test("metadata-only payloads (cross-thread search) omit body_text instead of emitting an empty key", () => {
+    const msg = toSlaThreadMessage({ id: "m5", payload: { headers: [{ name: "From", value: "a@example.com" }] } });
+    expect(msg.body_text).toBeUndefined();
+  });
+
+  test("toEmail (unread path) carries body_text next to snippet", () => {
+    const email = toEmail({
+      id: "e1",
+      snippet: "short preview",
+      labelIds: ["INBOX", "UNREAD"],
+      payload: {
+        mimeType: "text/plain",
+        headers: [
+          { name: "From", value: "Partner <partner@example.com>" },
+          { name: "Subject", value: "Question" },
+          { name: "Date", value: "Mon, 21 Sep 2026 10:00:00 +0000" },
+        ],
+        body: { data: b64("Can your technician survey our system next week?") },
+      },
+    });
+    expect(email).toMatchObject({
+      id: "e1",
+      from: "Partner <partner@example.com>",
+      subject: "Question",
+      snippet: "short preview",
+      body_text: "Can your technician survey our system next week?",
+    });
   });
 });

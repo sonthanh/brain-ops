@@ -6,6 +6,13 @@ export interface Email {
   date: string;
   labels: string[];
   /**
+   * The sender's own text (quoted history stripped, capped) — see
+   * `src/lib/email-body.ts`. The snippet alone hid the actual ask in 4/4
+   * missed rows of the 2026-09-26 SLA eval. Absent when the message has no
+   * text part.
+   */
+  body_text?: string;
+  /**
    * Deterministic SLA-tier hint set by `detectSlaPrefilter` before LLM classification.
    * When "none", the classifier MUST assign `sla_tier: none` (skip SLA tracking) —
    * catches mechanical false positives (SaaS-platform automation) that the LLM
@@ -187,6 +194,13 @@ export interface SlaThreadMessage {
    * for backwards compat with older fixtures.
    */
   snippet?: string;
+  /**
+   * The sender's own text (quoted history stripped, capped at
+   * `BODY_MAX_CHARS`). Only the newest `BODY_MESSAGES_PER_THREAD` messages of
+   * a thread carry it; cross-thread search results never do (metadata fetch).
+   * NOT read by the deterministic resolver. Optional for older fixtures.
+   */
+  body_text?: string;
 }
 
 export interface SlaThread {

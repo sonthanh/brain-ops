@@ -1,6 +1,7 @@
 import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { detectSlaPrefilter } from "./lib/sla-prefilter.ts";
+import { bodyTextFromPayload, keepBodiesOnLatest } from "./lib/email-body.ts";
 import { parseIdentities } from "./lib/identities.ts";
 import type { Email, SlaThread, SlaThreadMessage } from "./lib/types.ts";
 import type { gmail_v1 } from "@googleapis/gmail";
@@ -48,6 +49,7 @@ export function toSlaThreadMessage(
   const replyTo = header("Reply-To");
   const subject = header("Subject");
   const snippet = msg.snippet || "";
+  const bodyText = bodyTextFromPayload(msg.payload);
 
   return {
     ...(msg.id ? { message_id: msg.id } : {}),
@@ -59,6 +61,32 @@ export function toSlaThreadMessage(
     reply_to: replyTo === "" ? null : replyTo,
     ...(subject ? { subject } : {}),
     ...(snippet ? { snippet } : {}),
+    ...(bodyText ? { body_text: bodyText } : {}),
+  };
+}
+
+/**
+ * Build an Email from a Gmail message fetched with `format: "full"`.
+ * `body_text` rides next to `snippet` so the classifier sees the whole ask.
+ */
+export function toEmail(msg: gmail_v1.Schema$Message): Email | null {
+  const id = msg.id;
+  if (!id) return null;
+  const headers = msg.payload?.headers || [];
+  const header = (name: string): string =>
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+  const from = header("From");
+  const prefilterHint = detectSlaPrefilter(from);
+  const bodyText = bodyTextFromPayload(msg.payload);
+  return {
+    id,
+    from,
+    subject: header("Subject"),
+    snippet: msg.snippet || "",
+    date: header("Date"),
+    labels: msg.labelIds || [],
+    ...(bodyText ? { body_text: bodyText } : {}),
+    ...(prefilterHint ? { sla_prefilter_hint: prefilterHint } : {}),
   };
 }
 
@@ -95,32 +123,14 @@ export async function fetchUnreadEmails(options: {
           gmail.users.messages.get({
             userId: "me",
             id: m.id as string,
-            format: "metadata",
-            metadataHeaders: ["From", "Subject", "Date"],
+            format: "full",
           }),
         ),
       );
 
       for (const d of details) {
-        const id = d.data.id;
-        if (!id) continue;
-
-        const headers = d.data.payload?.headers || [];
-        const header = (name: string): string =>
-          headers.find((h) => h.name === name)?.value || "";
-
-        const from = header("From");
-        const prefilterHint = detectSlaPrefilter(from);
-
-        emails.push({
-          id,
-          from,
-          subject: header("Subject"),
-          snippet: d.data.snippet || "",
-          date: header("Date"),
-          labels: d.data.labelIds || [],
-          ...(prefilterHint ? { sla_prefilter_hint: prefilterHint } : {}),
-        });
+        const email = toEmail(d.data);
+        if (email) emails.push(email);
       }
     }
 
@@ -310,21 +320,18 @@ export async function fetchSlaThreads(options: {
       const threadId = msg.data.threadId;
       if (!threadId) continue;
 
-      // Fetch all messages in the thread
+      // Fetch all messages in the thread. `full` (not `metadata`) so the
+      // classifiers get each message's own text; headers are unchanged.
       const thread = await gmail.users.threads.get({
         userId: "me",
         id: threadId,
-        format: "metadata",
-        metadataHeaders: SLA_METADATA_HEADERS,
+        format: "full",
       });
 
-      const threadMessages: SlaThreadMessage[] = [];
-      let slaInbound: SlaThreadMessage | undefined;
-      for (const m of thread.data.messages || []) {
-        const tm = toSlaThreadMessage(m);
-        threadMessages.push(tm);
-        if (m.id === msgId) slaInbound = tm;
-      }
+      const threadMessages: SlaThreadMessage[] = keepBodiesOnLatest(
+        (thread.data.messages || []).map(toSlaThreadMessage),
+      );
+      const slaInbound = threadMessages.find((m) => m.message_id === msgId);
 
       let crossThreadReplies: SlaThreadMessage[] | undefined;
       if (options.teamDomains && options.teamDomains.size > 0 && slaInbound) {
