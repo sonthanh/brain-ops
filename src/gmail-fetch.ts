@@ -78,9 +78,14 @@ export function toEmail(msg: gmail_v1.Schema$Message): Email | null {
   const from = header("From");
   const prefilterHint = detectSlaPrefilter(from);
   const bodyText = bodyTextFromPayload(msg.payload);
+  const cc = header("Cc");
+  const xOriginalSender = header("X-Original-Sender");
   return {
     id,
     from,
+    to: header("To"),
+    ...(cc ? { cc } : {}),
+    ...(xOriginalSender ? { x_original_sender: xOriginalSender } : {}),
     subject: header("Subject"),
     snippet: msg.snippet || "",
     date: header("Date"),

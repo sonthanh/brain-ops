@@ -282,4 +282,27 @@ describe("body_text — full message text for the classifiers (2026-09-26)", () 
       body_text: "Can your technician survey our system next week?",
     });
   });
+
+  test("toEmail carries To / Cc / X-Original-Sender for owner + sender-side decisions", () => {
+    const email = toEmail({
+      id: "e2",
+      payload: {
+        headers: [
+          { name: "From", value: "'Partner' via Music Licensing <license@example.org>" },
+          { name: "To", value: "license@example.org" },
+          { name: "Cc", value: "a@example.org, b@example.org" },
+          { name: "X-Original-Sender", value: "partner@label.example" },
+        ],
+      },
+    });
+    expect(email).toMatchObject({
+      to: "license@example.org",
+      cc: "a@example.org, b@example.org",
+      x_original_sender: "partner@label.example",
+    });
+    const bare = toEmail({ id: "e3", payload: { headers: [{ name: "From", value: "x@example.org" }] } });
+    expect(bare?.to).toBe("");
+    expect(bare && "cc" in bare).toBe(false);
+    expect(bare && "x_original_sender" in bare).toBe(false);
+  });
 });

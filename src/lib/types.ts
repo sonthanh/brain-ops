@@ -5,6 +5,12 @@ export interface Email {
   snippet: string;
   date: string;
   labels: string[];
+  /** `To` header ("" when absent) — owner bucket + "you vs team" routing. */
+  to: string;
+  /** `Cc` header; omitted when absent. */
+  cc?: string;
+  /** `X-Original-Sender` (Google Groups relay); omitted when absent. */
+  x_original_sender?: string;
   /**
    * The sender's own text (quoted history stripped, capped) — see
    * `src/lib/email-body.ts`. The snippet alone hid the actual ask in 4/4
