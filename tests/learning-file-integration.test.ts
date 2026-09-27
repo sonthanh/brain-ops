@@ -23,6 +23,15 @@ function loadBrainWorkflow(): string {
   return readFileSync(BRAIN_WORKFLOW_PATH, "utf-8");
 }
 
+// The classify step is "Classify with Claude" (Opus, until 2026-09-26) or
+// "Classify with Jev" (fixed rules + TypeSafe Jev). Match the step HEADER, not
+// the words anywhere — a comment mentioning the old step name must not count.
+const CLASSIFY_STEP = /- name: Classify with (Claude|Jev)\b/;
+
+function classifyHeader(yml: string): string {
+  return yml.match(CLASSIFY_STEP)?.[0] ?? "<no classify step>";
+}
+
 function stepSlice(yml: string, stepMarker: string, endMarker?: string): string {
   const start = yml.indexOf(stepMarker);
   if (start < 0) return "";
@@ -39,14 +48,17 @@ describeIfBrain("learning-file workflow integration", () => {
       // Either name is acceptable so this guard tolerates the workflow
       // shape change.
       const yml = loadBrainWorkflow();
-      const buildStep = stepSlice(yml, "Build classifier prompt", "Classify with Claude");
-      const classifyStep = stepSlice(yml, "Classify with Claude", "Split classifier output");
+      const buildStep = stepSlice(yml, "Build classifier prompt", classifyHeader(yml));
+      const classifyStep = stepSlice(yml, classifyHeader(yml), "Split classifier output");
       const combined = buildStep + "\n" + classifyStep;
       // Either the workflow embeds the path directly, or it invokes the
       // pre-classify script that reads the file from a known repo path.
       const referencesFile =
         combined.includes("business/intelligence/gmail-classify-learnings.md") ||
-        combined.includes("scripts/gmail-triage/pre-classify.ts");
+        combined.includes("scripts/gmail-triage/pre-classify.ts") ||
+        // jev-classify.ts reads the learnings file (routes senders whose drafts
+        // were deleted / team-handled to the team instead of the user).
+        combined.includes("scripts/gmail-triage/jev-classify.ts");
       expect(referencesFile).toBe(true);
     });
 
@@ -68,7 +80,8 @@ describeIfBrain("learning-file workflow integration", () => {
 
     test("gmail-draft-learnings.md is NOT referenced inside the classify step", () => {
       const yml = loadBrainWorkflow();
-      const classifyStep = stepSlice(yml, "Classify with Claude", "Run Gmail cleanup");
+      const classifyStep = stepSlice(yml, classifyHeader(yml), "Run Gmail cleanup");
+      expect(classifyStep).not.toBe("");
       expect(classifyStep).not.toContain("gmail-draft-learnings.md");
     });
   });
@@ -79,10 +92,10 @@ describeIfBrain("learning-file workflow integration", () => {
       expect(yml).toMatch(/sonthanh\/brain-ops\/actions\/gmail-lifecycle-check@v\d+/);
     });
 
-    test("lifecycle-check step runs BEFORE Classify with Claude (so learnings files exist for prompt load)", () => {
+    test("lifecycle-check step runs BEFORE the classify step (so learnings files exist when it loads them)", () => {
       const yml = loadBrainWorkflow();
       const lifecycleIdx = yml.indexOf("gmail-lifecycle-check");
-      const classifyIdx = yml.indexOf("Classify with Claude");
+      const classifyIdx = yml.search(CLASSIFY_STEP);
       expect(lifecycleIdx).toBeGreaterThan(-1);
       expect(classifyIdx).toBeGreaterThan(-1);
       expect(lifecycleIdx).toBeLessThan(classifyIdx);

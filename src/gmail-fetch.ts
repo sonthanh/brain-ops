@@ -2,11 +2,13 @@ import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { detectSlaPrefilter } from "./lib/sla-prefilter.ts";
 import { bodyTextFromPayload, keepBodiesOnLatest } from "./lib/email-body.ts";
+import { mapLimit } from "./lib/map-limit.ts";
 import { parseIdentities } from "./lib/identities.ts";
 import type { Email, SlaThread, SlaThreadMessage } from "./lib/types.ts";
 import type { gmail_v1 } from "@googleapis/gmail";
 
 const BATCH_SIZE = 20;
+const SLA_FETCH_CONCURRENCY = 5;
 
 /**
  * Metadata headers pulled for every message that ends up in an SLA thread.
@@ -310,9 +312,9 @@ export async function fetchSlaThreads(options: {
   }
 
   const gmail = createGmailClient(options.credentialsPath);
-  const threads: SlaThread[] = [];
-
-  for (const msgId of messageIds) {
+  // Fetched 5 at a time (was one by one: ~9 s of a triage run for ~40 ledger
+  // rows). Gmail allows 250 quota units/user/second; each call here is 5-10.
+  const fetched = await mapLimit(messageIds, SLA_FETCH_CONCURRENCY, async (msgId): Promise<SlaThread | null> => {
     try {
       // Get the message to find its threadId
       const msg = await gmail.users.messages.get({
@@ -323,7 +325,7 @@ export async function fetchSlaThreads(options: {
       });
 
       const threadId = msg.data.threadId;
-      if (!threadId) continue;
+      if (!threadId) return null;
 
       // Fetch all messages in the thread. `full` (not `metadata`) so the
       // classifiers get each message's own text; headers are unchanged.
@@ -360,18 +362,20 @@ export async function fetchSlaThreads(options: {
         );
       }
 
-      threads.push({
+      return {
         message_id: msgId,
         gmail_thread_id: threadId,
         thread_messages: threadMessages,
         ...(crossThreadReplies && crossThreadReplies.length > 0
           ? { cross_thread_replies: crossThreadReplies }
           : {}),
-      });
+      };
     } catch (e) {
       console.error(`[sla-threads] Failed to fetch thread for ${msgId}:`, e);
+      return null;
     }
-  }
+  });
+  const threads = fetched.filter((t): t is SlaThread => t !== null);
 
   return threads;
 }
