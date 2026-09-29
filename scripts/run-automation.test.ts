@@ -124,6 +124,14 @@ describe("automations.config integrity", () => {
       expect(s.timeoutMs).toBeGreaterThan(45 * 60 * 1000); // long workflow needs > default cap
     }
   });
+  test("geo-dev /goal treats the tool-missing pre-flight as a finished run", () => {
+    // The /goal Stop hook judges against this prompt. An unconditional "invoke the Workflow tool"
+    // blocked the correct tool-missing exit 4 times on 2026-09-28 after the row was already pushed.
+    const p = AUTOMATIONS["geo-dev"].prompt;
+    expect(p).toContain("if the tool is missing, follow the spec's tool-missing path");
+    expect(p).toContain("that is a finished run and meets Done below");
+    expect(p).toContain("If the tool is present, invoke the Workflow tool");
+  });
 });
 
 // ── silent-failure detection (the W30 2026-07-26 hole) ──────────────────────
