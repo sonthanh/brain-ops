@@ -26,7 +26,7 @@
  *
  * A duplicate dispatch (cron slot firing right after us) is harmless: the
  * workflow's `gmail-ledger` concurrency group queues it, the run fetches
- * unread-only and caps work at 40 emails, so a second run is a ~2-min no-op.
+ * unread-only and caps work at 120 emails, so a second run is a ~2-min no-op.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
