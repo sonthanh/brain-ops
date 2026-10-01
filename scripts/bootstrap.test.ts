@@ -66,11 +66,14 @@ describe("allLabels", () => {
   test("covers every agent automation + support job, all com.brain.*", () => {
     const labels = allLabels();
     expect(labels).toContain("com.brain.automation.vault-lint");
-    expect(labels).toContain("com.brain.gmail-triage-watchdog");
+    expect(labels).toContain("com.brain.ci-watchdog");
+    expect(labels).not.toContain("com.brain.gmail-triage-watchdog");
     expect(labels).toContain("com.brain.triage");
     expect(labels.every((l) => l.startsWith("com.brain."))).toBe(true);
-    // 9 agent automations + 5 support jobs. Was 10 until 2026-08-08, when geo-digest
-    // moved to GitHub Actions (ai-brain .github/workflows/geo-digest.yml).
-    expect(labels.length).toBe(14);
+    // 9 agent automations + 4 support jobs. Was 10 until 2026-08-08, when geo-digest
+    // moved to GitHub Actions (ai-brain .github/workflows/geo-digest.yml). Support jobs
+    // were 5 until 2026-10-01, when gmail-triage-watchdog moved to GitHub Actions
+    // (brain-ops .github/workflows/gmail-triage-watchdog.yml).
+    expect(labels.length).toBe(13);
   });
 });

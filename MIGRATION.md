@@ -121,25 +121,24 @@ Notes:
 | geo-digest | Sat 08:00 | opus | brain |
 | geo-improve | Fri 21:00 | opus | brain-geo-analysis-plugin |
 
-**5 support jobs** (bash crons + bun watchdogs, generated from `scripts/gen-ops-plists.ts`):
+**4 support jobs** (bash crons + bun watchdogs, generated from `scripts/gen-ops-plists.ts`):
 
 | id | schedule | what |
 |---|---|---|
 | reap-orca-sessions | every 30 min + at load | safety-net reaper for stray interactive `claude /goal` |
 | ci-watchdog | every 30 min | files AFK-fix issues when a watched repo's main goes red |
-| gmail-triage-watchdog | every 30 min | dispatches gmail triage if a GitHub cron slot is skipped |
 | codeburn-optimize | Fri 20:00 | deterministic token-usage optimization pass |
 | triage | daily 02:30 | deterministic GitHub issue-backlog triage |
 
 > **Gmail triage itself runs on GitHub Actions (cloud), not launchd** — nothing to migrate for it.
-> The `gmail-triage-watchdog` above is only the local safety net that re-dispatches a missed slot.
+> Its missed-slot watchdog also runs on GitHub Actions (`.github/workflows/gmail-triage-watchdog.yml`).
 
 ---
 
 ## Verify
 
 ```bash
-launchctl list | grep com.brain            # all 15 labels present
+launchctl list | grep com.brain            # all 14 labels present
 # dry-run one agent job end-to-end (writes + pushes a real report):
 bun run ~/work/brain-ops/scripts/run-automation.ts vault-lint
 tail -f ~/.local/state/brain-automations/vault-lint/launchd.out.log

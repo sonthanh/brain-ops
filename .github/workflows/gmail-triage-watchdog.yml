@@ -9,9 +9,9 @@ name: Gmail Triage Watchdog
 # Cost: this repo is PUBLIC, so these runs are free. The dispatched triage
 # run bills the private repo — the script's budget guard refuses at 1,900 min.
 #
-# Every 15 min at off-peak minutes: this cron can skip too, but missing the
-# whole 90-min drift window (6 ticks) in a row is rare. The local launchd
-# watchdog stays on as a backup; a double dispatch just queues a no-op run.
+# Every 30 min at off-peak minutes: triage slots are 2 h apart and a slot
+# counts as missed after 90 min, so each slot gets ~3 chances to be caught.
+# This cron can skip too; a double dispatch just queues a no-op run.
 #
 # Requires secret AI_BRAIN_ACTIONS_TOKEN: fine-grained PAT, repository
 # sonthanh/ai-brain only, permission "Actions: Read and write". When it
@@ -22,7 +22,7 @@ name: Gmail Triage Watchdog
 
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: '7,37 * * * *'
   workflow_dispatch:
 
 permissions: {}

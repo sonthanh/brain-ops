@@ -89,7 +89,7 @@ export function brainOsEnabled(settingsRaw: string | null): boolean {
   }
 }
 
-/** Every launchd label this stack manages — agent automations plus the 5 support jobs. */
+/** Every launchd label this stack manages — agent automations plus the 4 support jobs. */
 export function allLabels(): string[] {
   return [
     ...Object.keys(AUTOMATIONS).map((id) => `com.brain.automation.${id}`),

@@ -1,8 +1,8 @@
 #!/usr/bin/env -S bun run
-// gen-ops-plists.ts — render launchd plists for the 5 brain SUPPORT jobs (watchdogs, the
+// gen-ops-plists.ts — render launchd plists for the 4 brain SUPPORT jobs (watchdogs, the
 // session reaper, and the two deterministic bash crons) that are NOT `claude -p` agent
 // automations. The agent automations live in automations.config.ts + gen-automation-plists.ts;
-// these five are a different shape (bash crons + bun watchdogs, interval- and calendar-based),
+// these four are a different shape (bash crons + bun watchdogs, interval- and calendar-based),
 // so they get their own small renderer here.
 //
 // Portable by construction: the bun and node binaries are resolved with Bun.which at generation
@@ -61,12 +61,6 @@ export const OPS_JOBS: OpsJob[] = [
   {
     id: "ci-watchdog",
     program: [BUN, "run", `${OPS}/scripts/ci-watchdog.ts`],
-    workingDir: OPS,
-    intervalSec: 1800,
-  },
-  {
-    id: "gmail-triage-watchdog",
-    program: [BUN, "run", `${OPS}/scripts/gmail-triage-watchdog.ts`],
     workingDir: OPS,
     intervalSec: 1800,
   },

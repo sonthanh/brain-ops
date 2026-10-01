@@ -20,9 +20,9 @@ const byId = (id: string): OpsJob => {
 };
 
 describe("OPS_JOBS registry", () => {
-  test("holds exactly the 5 known support jobs", () => {
+  test("holds exactly the 4 known support jobs", () => {
     expect(OPS_JOBS.map((j) => j.id).sort()).toEqual(
-      ["ci-watchdog", "codeburn-optimize", "gmail-triage-watchdog", "reap-orca-sessions", "triage"],
+      ["ci-watchdog", "codeburn-optimize", "reap-orca-sessions", "triage"],
     );
   });
 
@@ -67,9 +67,9 @@ describe("renderPlist", () => {
   });
 
   test("log paths follow ~/.local/state/<id>/launchd-{stdout,stderr}.log", () => {
-    const xml = renderPlist(byId("gmail-triage-watchdog"));
-    expect(xml).toContain("/.local/state/gmail-triage-watchdog/launchd-stdout.log");
-    expect(xml).toContain("/.local/state/gmail-triage-watchdog/launchd-stderr.log");
+    const xml = renderPlist(byId("ci-watchdog"));
+    expect(xml).toContain("/.local/state/ci-watchdog/launchd-stdout.log");
+    expect(xml).toContain("/.local/state/ci-watchdog/launchd-stderr.log");
   });
 
   test("PATH is toolchain-detected, never the stale hardcoded nvm version", () => {
