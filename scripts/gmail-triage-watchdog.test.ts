@@ -7,6 +7,7 @@ import {
   DRIFT_ALLOWANCE_MIN,
   estimateMinutes,
   mostRecentSlotMs,
+  notifyCommand,
   SLOT_MINUTE,
   SLOTS_UTC,
 } from "./gmail-triage-watchdog";
@@ -119,6 +120,22 @@ describe("budgetVerdict", () => {
     expect(budgetVerdict(BUDGET_WARN_MINUTES).level).toBe("warn");
     expect(budgetVerdict(BUDGET_REFUSE_MINUTES - 1).level).toBe("warn");
     expect(budgetVerdict(BUDGET_REFUSE_MINUTES).level).toBe("refuse");
+  });
+});
+
+describe("notifyCommand", () => {
+  test("on GitHub Actions: a ::warning:: annotation, no osascript", () => {
+    expect(notifyCommand("budget high", { GITHUB_ACTIONS: "true" })).toEqual({
+      kind: "annotation",
+      line: "::warning title=gmail-triage watchdog::budget high",
+    });
+  });
+
+  test("locally: osascript notification with the message quoted", () => {
+    expect(notifyCommand('say "hi"', {})).toEqual({
+      kind: "spawn",
+      argv: ["osascript", "-e", 'display notification "say \\"hi\\"" with title "gmail-triage watchdog"'],
+    });
   });
 });
 

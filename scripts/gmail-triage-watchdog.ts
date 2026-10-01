@@ -1,8 +1,13 @@
 #!/usr/bin/env -S bun run
 /*
  * gmail-triage-watchdog.ts — re-dispatch "Gmail Triage" when GitHub cron
- * skips or drifts past a slot. launchd com.brain.gmail-triage-watchdog
- * (every 30 min, always-on Mac mini).
+ * skips or drifts past a slot. Runs in two places:
+ *   - Primary: .github/workflows/gmail-triage-watchdog.yml in this PUBLIC
+ *     repo (every 15 min; public-repo Actions minutes are free). Added
+ *     2026-10-01 after the Mac slept through three skipped morning slots.
+ *   - Backup: launchd com.brain.gmail-triage-watchdog (every 30 min, local
+ *     Mac — only while it is awake).
+ * Both may dispatch for the same slot; that is harmless (see below).
  *
  * Why: GitHub scheduled workflows are best-effort — slots fire 20-140 min
  * late or never (2026-07-03 and 2026-07-10: the early-UTC slot silently
@@ -139,13 +144,27 @@ async function gh(args: string[]): Promise<string> {
   return out;
 }
 
-function notifyMac(msg: string): void {
+export type NotifyCommand = { kind: "annotation"; line: string } | { kind: "spawn"; argv: string[] };
+
+/** How to surface a warning: Actions log annotation in CI, macOS notification locally. */
+export function notifyCommand(msg: string, env: Record<string, string | undefined>): NotifyCommand {
+  if (env.GITHUB_ACTIONS === "true") {
+    return { kind: "annotation", line: `::warning title=gmail-triage watchdog::${msg}` };
+  }
+  return {
+    kind: "spawn",
+    argv: ["osascript", "-e", `display notification ${JSON.stringify(msg)} with title "gmail-triage watchdog"`],
+  };
+}
+
+function notify(msg: string): void {
+  const cmd = notifyCommand(msg, process.env);
+  if (cmd.kind === "annotation") {
+    console.log(cmd.line);
+    return;
+  }
   try {
-    Bun.spawnSync([
-      "osascript",
-      "-e",
-      `display notification ${JSON.stringify(msg)} with title "gmail-triage watchdog"`,
-    ]);
+    Bun.spawnSync(cmd.argv);
   } catch {
     // notification is best-effort
   }
@@ -194,13 +213,13 @@ if (import.meta.main) {
     if (verdict.level === "refuse") {
       const msg = `REFUSING dispatch — est. ${verdict.usedMinutes}/${BUDGET_MINUTES_PER_MONTH} Actions min used this month (>= ${BUDGET_REFUSE_MINUTES}). Quota exhaustion would stop ALL workflows.`;
       log(`${msg} (${decision.reason})`);
-      notifyMac(msg);
+      notify(msg);
       process.exit(0);
     }
     if (verdict.level === "warn") {
       const msg = `Actions budget warning: est. ${verdict.usedMinutes}/${BUDGET_MINUTES_PER_MONTH} min used this month (>= ${BUDGET_WARN_MINUTES}). Consider trimming slots (gmail-triage.yml cron).`;
       log(msg);
-      notifyMac(msg);
+      notify(msg);
     }
 
     log(`STALE — ${decision.reason}; dispatching ${WORKFLOW_FILE} (est. ${verdict.usedMinutes} min used this month)`);
