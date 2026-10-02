@@ -8,6 +8,7 @@ import {
   estimateMinutes,
   mostRecentSlotMs,
   warningAnnotation,
+  dispatchArgs,
   SLOT_MINUTE,
   SLOTS_UTC,
 } from "./gmail-triage-watchdog";
@@ -126,6 +127,21 @@ describe("budgetVerdict", () => {
 describe("warningAnnotation", () => {
   test("formats a GitHub Actions ::warning:: annotation", () => {
     expect(warningAnnotation("budget high")).toBe("::warning title=gmail-triage watchdog::budget high");
+  });
+});
+
+describe("dispatchArgs", () => {
+  test("uses the REST dispatch endpoint with an explicit ref (no GraphQL default-branch lookup)", () => {
+    // `gh workflow run` resolves the default branch via GraphQL, which the
+    // fine-grained Actions-only PAT cannot read (2026-10-02 01:04 dispatch failed).
+    expect(dispatchArgs()).toEqual([
+      "api",
+      "-X",
+      "POST",
+      "repos/sonthanh/ai-brain/actions/workflows/gmail-triage.yml/dispatches",
+      "-f",
+      "ref=main",
+    ]);
   });
 });
 

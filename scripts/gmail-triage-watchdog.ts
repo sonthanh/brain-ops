@@ -33,6 +33,16 @@
 
 export const REPO = "sonthanh/ai-brain";
 export const WORKFLOW_FILE = "gmail-triage.yml";
+export const WORKFLOW_REF = "main";
+
+/**
+ * gh args that dispatch the triage workflow. REST with an explicit ref, not
+ * `gh workflow run`: that resolves the default branch over GraphQL, which the
+ * fine-grained Actions-only token cannot read (2026-10-02 01:04 dispatch failed).
+ */
+export function dispatchArgs(): string[] {
+  return ["api", "-X", "POST", `repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`, "-f", `ref=${WORKFLOW_REF}`];
+}
 
 // Cron slots of gmail-triage.yml: '23 5,7,9,11,13,15,18,23 * * *' (UTC).
 export const SLOTS_UTC = [5, 7, 9, 11, 13, 15, 18, 23];
@@ -189,7 +199,7 @@ if (import.meta.main) {
     }
 
     log(`STALE — ${decision.reason}; dispatching ${WORKFLOW_FILE} (est. ${verdict.usedMinutes} min used this month)`);
-    await gh(["workflow", "run", WORKFLOW_FILE, "--repo", REPO]);
+    await gh(dispatchArgs());
     log("dispatched ok");
   } catch (e) {
     log(`ERROR — ${e instanceof Error ? e.message : String(e)}`);
