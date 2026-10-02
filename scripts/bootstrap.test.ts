@@ -72,8 +72,8 @@ describe("allLabels", () => {
     expect(labels.every((l) => l.startsWith("com.brain."))).toBe(true);
     // 9 agent automations + 4 support jobs. Was 10 until 2026-08-08, when geo-digest
     // moved to GitHub Actions (ai-brain .github/workflows/geo-digest.yml). Support jobs
-    // were 5 until 2026-10-01, when gmail-triage-watchdog moved to GitHub Actions
-    // (brain-ops .github/workflows/gmail-triage-watchdog.yml).
+    // were 5 until 2026-10-01, when gmail-triage-watchdog left launchd (since
+    // 2026-10-02 the Cloudflare Worker workers/gmail-triage-scheduler starts triage).
     expect(labels.length).toBe(13);
   });
 });

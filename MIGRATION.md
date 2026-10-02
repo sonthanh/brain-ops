@@ -131,7 +131,7 @@ Notes:
 | triage | daily 02:30 | deterministic GitHub issue-backlog triage |
 
 > **Gmail triage itself runs on GitHub Actions (cloud), not launchd** — nothing to migrate for it.
-> Its missed-slot watchdog also runs on GitHub Actions (`.github/workflows/gmail-triage-watchdog.yml`).
+> Its schedule is the Cloudflare Worker `workers/gmail-triage-scheduler` — also nothing to migrate.
 
 ---
 
