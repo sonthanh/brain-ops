@@ -10,3 +10,4 @@ business/
 
 # Keep dist/ committed (bundled actions need it)
 # !.github/actions/*/dist/
+.wrangler/
