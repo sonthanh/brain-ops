@@ -114,3 +114,25 @@ describe("issue content", () => {
     expect(ISSUE_LABELS).toContain("weight:quick");
   });
 });
+
+describe("schedule-only workflows (Geo Digest)", () => {
+  // 2026-10-03: W40 Geo Digest died in 17s (brain-os-plugin went private, anonymous
+  // clone failed) and nothing noticed — the watchdog only watched brain-os-plugin.
+  const geo = WATCHED.find((w) => w.repo === "sonthanh/ai-brain");
+
+  test("ai-brain Geo Digest is watched", () => {
+    expect(geo).toBeDefined();
+    expect(geo!.workflows).toEqual(["Geo Digest"]);
+  });
+
+  test("the fix issue tells the fixer to re-dispatch, since a push never re-runs it", () => {
+    const body = issueBody(geo!, run({ id: 7, name: "Geo Digest", conclusion: "failure" }), "tail");
+    expect(body).toContain("gh workflow run geo-digest.yml --repo sonthanh/ai-brain");
+    expect(body).toContain("does not run on push");
+  });
+
+  test("repos without a rerun command keep the push-and-watch instruction only", () => {
+    const body = issueBody(WATCHED[0]!, run({ id: 8, conclusion: "failure" }), "tail");
+    expect(body).not.toContain("does not run on push");
+  });
+});

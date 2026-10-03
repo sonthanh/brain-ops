@@ -33,6 +33,8 @@ export interface WatchedRepo {
   workdir: string; // local checkout the fixer should work in
   gateCmd: string; // repo's CI-equivalent local gate
   workflows: string[]; // workflow names to watch (exact match)
+  rerunCmd?: string; // schedule-only workflows: a push never re-runs them, so the fixer must
+  fixHint?: string; // repo-specific guidance appended to "How to fix"
 }
 
 export const WATCHED: WatchedRepo[] = [
@@ -43,6 +45,19 @@ export const WATCHED: WatchedRepo[] = [
     workdir: "~/work/brain-os-plugin",
     gateCmd: "shellcheck install.sh && bunx tsc --noEmit && bun test",
     workflows: ["CI", "Release"],
+  },
+  {
+    // Added 2026-10-03: the W40 digest died in 17s (brain-os-plugin went private, the
+    // anonymous clone failed) and no agent noticed — this list only had brain-os-plugin.
+    repo: "sonthanh/ai-brain",
+    short: "geo-digest",
+    areaLabel: "area:plugin-brain-geo",
+    workdir: "~/work/brain (workflow) + ~/work/brain-geo-analysis-plugin (skill code)",
+    gateCmd: "cd ~/work/brain-geo-analysis-plugin && bun test",
+    workflows: ["Geo Digest"],
+    rerunCmd: "gh workflow run geo-digest.yml --repo sonthanh/ai-brain",
+    fixHint:
+      "A failure in the setup steps (clone, secret, token, permission) is fixed with your local gh credentials — e.g. a read-only deploy key + `gh secret set` (pattern: GEO_PLUGIN_DEPLOY_KEY, OS_PLUGIN_DEPLOY_KEY in .github/workflows/geo-digest.yml). Never print a secret. A failure inside the /geo-digest agent step is a plugin-code fix in ~/work/brain-geo-analysis-plugin (edit workflows/geo-digest.mjs AND skills/geo-digest/SKILL.md together).",
   },
 ];
 
@@ -117,7 +132,7 @@ ${logTail || "(log unavailable — read it with: gh run view " + run.id + " --re
 - Fix the ROOT CAUSE and add/extend a regression test where the failure class allows. NEVER delete or weaken an assertion just to go green — if a test encodes a wrong expectation introduced by the breaking commit, correct it and say so in the commit message.
 - If this is a secret-scan/gitleaks failure: STOP. Do not patch. Relabel \`type:human-review\` and comment a diagnosis — a leaked credential needs human rotation and history rewrite.
 - Push (the repo's pre-push gate reruns the same checks), then verify the new run: \`gh run watch --repo ${cfg.repo}\`.
-
+${cfg.fixHint ? `- ${cfg.fixHint}\n` : ""}${cfg.rerunCmd ? `- **${run.name} does not run on push.** After the fix lands, start a fresh run yourself: \`${cfg.rerunCmd}\`, then watch it to green.\n` : ""}
 ## Acceptance criteria
 
 - [ ] Latest ${run.name} run on \`main\` of ${cfg.repo} is green
