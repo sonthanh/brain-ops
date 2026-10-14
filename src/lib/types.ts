@@ -25,6 +25,12 @@ export interface Email {
    * otherwise mis-tags as `normal`. Absent for everything else.
    */
   sla_prefilter_hint?: "none";
+  /**
+   * Has the owner ever sent mail to this sender (Gmail `in:sent to:<addr>`)?
+   * A strong "a real relationship, show it to me" signal for the classifier.
+   * Absent when the lookup failed — unknown, not false.
+   */
+  owner_wrote_before?: boolean;
 }
 
 /** Hidden Gmail label on every message gmail-clean has handled. The fetch

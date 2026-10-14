@@ -148,7 +148,45 @@ export async function fetchUnreadEmails(options: {
     pageToken = res.data.nextPageToken ?? undefined;
   } while (pageToken);
 
+  await markOwnerWroteBefore(emails, async (addr) => {
+    const r = await gmail.users.messages.list({ userId: "me", q: `in:sent to:${addr}`, maxResults: 1 });
+    return (r.data.messages?.length ?? 0) > 0;
+  });
   return emails;
+}
+
+/** Bare lowercase address from a header value ("Name <a@b>" → "a@b"). */
+function bareAddress(raw: string | undefined): string {
+  if (!raw) return "";
+  return (raw.match(/<([^>]+)>/)?.[1] ?? raw.match(/\S+@\S+/)?.[0] ?? "").trim().toLowerCase();
+}
+
+/**
+ * Set `owner_wrote_before` on each email: one sent-mail lookup per unique
+ * sender. A Google Groups relay ("X via Group <group@…>") is looked up by its
+ * X-Original-Sender. A failed lookup leaves the field absent (unknown).
+ */
+export async function markOwnerWroteBefore(
+  emails: Email[],
+  ownerWroteTo: (address: string) => Promise<boolean>,
+): Promise<void> {
+  const senderOf = (e: Email): string => {
+    const display = e.from.split("<")[0] ?? "";
+    return (/\bvia\b/i.test(display) && bareAddress(e.x_original_sender)) || bareAddress(e.from);
+  };
+  const unique = [...new Set(emails.map(senderOf).filter(Boolean))];
+  const known = new Map<string, boolean>();
+  await mapLimit(unique, 5, async (addr) => {
+    try {
+      known.set(addr, await ownerWroteTo(addr));
+    } catch (e) {
+      console.error(`[gmail-fetch] sent-mail lookup failed for ${addr} — ${(e as Error).message}`);
+    }
+  });
+  for (const e of emails) {
+    const v = known.get(senderOf(e));
+    if (v !== undefined) e.owner_wrote_before = v;
+  }
 }
 
 /**

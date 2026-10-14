@@ -5,6 +5,7 @@ import {
   SLA_METADATA_HEADERS,
   fetchSlaThreads,
   fetchUnreadEmails,
+  markOwnerWroteBefore,
   loadTeamDomains,
   toEmail,
   toSlaThreadMessage,
@@ -304,5 +305,42 @@ describe("body_text — full message text for the classifiers (2026-09-26)", () 
     expect(bare?.to).toBe("");
     expect(bare && "cc" in bare).toBe(false);
     expect(bare && "x_original_sender" in bare).toBe(false);
+  });
+});
+
+describe("markOwnerWroteBefore", () => {
+  const base = { subject: "s", snippet: "", date: "", labels: [], to: "me@x.com" };
+
+  test("sets owner_wrote_before per sender, one lookup per unique address", async () => {
+    const asked: string[] = [];
+    const emails = [
+      { ...base, id: "1", from: "David <david@mpd.ae>" },
+      { ...base, id: "2", from: "david@mpd.ae" },
+      { ...base, id: "3", from: "Promo <news@shop.com>" },
+    ];
+    await markOwnerWroteBefore(emails, async (addr) => {
+      asked.push(addr);
+      return addr === "david@mpd.ae";
+    });
+    expect(asked.sort()).toEqual(["david@mpd.ae", "news@shop.com"]);
+    expect(emails.map((e) => (e as { owner_wrote_before?: boolean }).owner_wrote_before)).toEqual([true, true, false]);
+  });
+
+  test("a Google Groups relay is looked up by its real sender", async () => {
+    const asked: string[] = [];
+    const emails = [{ ...base, id: "1", from: "'Ann' via Licensing <license@team.co>", x_original_sender: "ann@partner.com" }];
+    await markOwnerWroteBefore(emails, async (addr) => {
+      asked.push(addr);
+      return false;
+    });
+    expect(asked).toEqual(["ann@partner.com"]);
+  });
+
+  test("a failed lookup leaves the field absent (unknown), never false", async () => {
+    const emails = [{ ...base, id: "1", from: "x@y.com" }];
+    await markOwnerWroteBefore(emails, async () => {
+      throw new Error("quota");
+    });
+    expect("owner_wrote_before" in emails[0]!).toBe(false);
   });
 });
