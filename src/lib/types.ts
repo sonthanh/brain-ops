@@ -27,6 +27,11 @@ export interface Email {
   sla_prefilter_hint?: "none";
 }
 
+/** Hidden Gmail label on every message gmail-clean has handled. The fetch
+ *  query excludes it, so mail kept UNREAD for the owner is not fetched and
+ *  classified again on every run. */
+export const TRIAGED_LABEL = "triaged";
+
 export type ActionType =
   | "archive"
   | "delete"

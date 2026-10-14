@@ -2,15 +2,17 @@ import { gmail_v1 } from "@googleapis/gmail";
 import { createGmailClient } from "./lib/gmail-client.ts";
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "fs";
 import { resolve, join, dirname } from "path";
-import { parseTriageActions } from "./lib/types.ts";
+import { parseTriageActions, TRIAGED_LABEL } from "./lib/types.ts";
 import type { TriageAction, ExecutionResult, CleanupStats } from "./lib/types.ts";
 
 const CONCURRENCY = 10;
 const RETENTION_DAYS = 7;
 
 /** Label IDs for actions that just modify labels on a message.
- *  Every action removes UNREAD so processed emails don't reappear in
- *  `is:unread in:inbox` fetches or confuse `label:unread` searches.
+ *  Mail the owner must see (star, mark-important, needs-reply) stays UNREAD —
+ *  it is the owner's signal that something is waiting. Every label action also
+ *  adds the hidden `triaged` label (see TRIAGED_LABEL), which the fetch query
+ *  excludes, so kept-unread mail is not re-fetched and re-classified.
  *
  *  `needs-reply` adds STARRED here so that draft-existence and star are
  *  atomic within a single workflow run: the Draft replies step runs after
@@ -19,11 +21,28 @@ const RETENTION_DAYS = 7;
  *  = starred; both or neither." */
 const LABEL_ACTIONS: Record<string, { add?: string[]; remove?: string[] }> = {
   archive: { remove: ["INBOX", "UNREAD"] },
-  star: { add: ["STARRED"], remove: ["UNREAD"] },
-  "mark-important": { add: ["IMPORTANT"], remove: ["UNREAD"] },
-  "needs-reply": { add: ["STARRED"], remove: ["UNREAD"] },
+  star: { add: ["STARRED"] },
+  "mark-important": { add: ["IMPORTANT"] },
+  "needs-reply": { add: ["STARRED"] },
   read: { remove: ["UNREAD"] },
 };
+
+/** Find or create the hidden `triaged` label and cache its ID. */
+export async function ensureTriagedLabel(gmail: gmail_v1.Gmail, labelCache: Map<string, string>): Promise<void> {
+  if (labelCache.has(TRIAGED_LABEL)) return;
+  const existing = await gmail.users.labels.list({ userId: "me" });
+  const found = (existing.data.labels || []).find((l) => l.name === TRIAGED_LABEL && l.id);
+  if (found?.id) {
+    labelCache.set(TRIAGED_LABEL, found.id);
+    return;
+  }
+  const created = await gmail.users.labels.create({
+    userId: "me",
+    requestBody: { name: TRIAGED_LABEL, labelListVisibility: "labelHide", messageListVisibility: "hide" },
+  });
+  if (!created.data.id) throw new Error(`creating the "${TRIAGED_LABEL}" label returned no ID`);
+  labelCache.set(TRIAGED_LABEL, created.data.id);
+}
 
 function extractSender(value: string): string | undefined {
   return (value.match(/<([^>]+)>/) || value.match(/(\S+@\S+)/))?.[1];
@@ -36,14 +55,15 @@ export async function executeAction(
 ): Promise<ExecutionResult> {
   try {
     // Simple label-based actions (archive, star, mark-important)
+    const triaged = labelCache.get(TRIAGED_LABEL);
     const labelAction = LABEL_ACTIONS[action.action];
     if (labelAction) {
       await gmail.users.messages.modify({
         userId: "me",
         id: action.id,
         requestBody: {
-          addLabelIds: labelAction.add,
-          removeLabelIds: labelAction.remove,
+          addLabelIds: [...(labelAction.add ?? []), ...(triaged ? [triaged] : [])],
+          removeLabelIds: labelAction.remove ?? [],
         },
       });
       return { ok: true };
@@ -69,7 +89,7 @@ export async function executeAction(
       await gmail.users.messages.modify({
         userId: "me",
         id: action.id,
-        requestBody: { addLabelIds: [labelId], removeLabelIds: ["UNREAD"] },
+        requestBody: { addLabelIds: [labelId, ...(triaged ? [triaged] : [])], removeLabelIds: ["UNREAD"] },
       });
       return { ok: true };
     }
@@ -176,6 +196,7 @@ export async function cleanupEmails(options: {
 
   // Cache labels upfront
   const labelCache = new Map<string, string>();
+  await ensureTriagedLabel(gmail, labelCache);
   const labelsNeeded = new Set(
     pending.filter((a) => a.action.startsWith("label:")).map((a) => a.action.slice(6)),
   );

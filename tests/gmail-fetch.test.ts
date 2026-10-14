@@ -25,7 +25,7 @@ describe("gmail-fetch", () => {
         await fetchUnreadEmails({ dryRun: true });
         const logs = spy.mock.calls.map((args) => args.join(" "));
         expect(logs.some((l) => l.includes("[dry-run]"))).toBe(true);
-        expect(logs.some((l) => l.includes("is:unread in:inbox"))).toBe(true);
+        expect(logs.some((l) => l.includes("is:unread in:inbox -label:triaged"))).toBe(true);
       } finally {
         spy.mockRestore();
       }

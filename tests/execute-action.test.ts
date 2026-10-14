@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { executeAction } from "../src/gmail-clean.ts";
+import { executeAction, ensureTriagedLabel } from "../src/gmail-clean.ts";
+import { TRIAGED_LABEL } from "../src/lib/types.ts";
 import type { gmail_v1 } from "@googleapis/gmail";
 import type { TriageAction } from "../src/lib/types.ts";
 
@@ -98,7 +99,7 @@ describe("executeAction", () => {
     expect(createCalled).toBe(false);
   });
 
-  test("needs-reply stars message + removes UNREAD (atomic with draft step)", async () => {
+  test("needs-reply stars message and keeps it UNREAD (owner must see it)", async () => {
     let addedLabels: string[] = [];
     let removedLabels: string[] = [];
     const gmail = mockGmail({
@@ -113,7 +114,69 @@ describe("executeAction", () => {
     const result = await executeAction(gmail, action("needs-reply"), new Map());
     expect(result.ok).toBe(true);
     expect(addedLabels).toContain("STARRED");
-    expect(removedLabels).toContain("UNREAD");
+    expect(removedLabels).not.toContain("UNREAD");
+  });
+
+  test.each(["mark-important", "star", "needs-reply"])(
+    "%s leaves the message UNREAD and tags it triaged so the next fetch skips it",
+    async (type) => {
+      let addedLabels: string[] = [];
+      let removedLabels: string[] = [];
+      const gmail = mockGmail({
+        modify: (params: { requestBody: { addLabelIds?: string[]; removeLabelIds?: string[] } }) => {
+          addedLabels = params.requestBody.addLabelIds ?? [];
+          removedLabels = params.requestBody.removeLabelIds ?? [];
+          return Promise.resolve({});
+        },
+      });
+      const result = await executeAction(gmail, action(type), new Map([[TRIAGED_LABEL, "L_TRIAGED"]]));
+      expect(result.ok).toBe(true);
+      expect(removedLabels).not.toContain("UNREAD");
+      expect(addedLabels).toContain("L_TRIAGED");
+    },
+  );
+
+  test("mark-important adds IMPORTANT", async () => {
+    let addedLabels: string[] = [];
+    const gmail = mockGmail({
+      modify: (params: { requestBody: { addLabelIds?: string[] } }) => {
+        addedLabels = params.requestBody.addLabelIds ?? [];
+        return Promise.resolve({});
+      },
+    });
+    await executeAction(gmail, action("mark-important"), new Map());
+    expect(addedLabels).toContain("IMPORTANT");
+  });
+
+  test("ensureTriagedLabel reuses an existing label", async () => {
+    let created = false;
+    const cache = new Map<string, string>();
+    const gmail = mockGmail({
+      labelsList: () => Promise.resolve({ data: { labels: [{ name: TRIAGED_LABEL, id: "L_EXIST" }] } }),
+      labelsCreate: () => {
+        created = true;
+        return Promise.resolve({ data: { id: "L_NEW" } });
+      },
+    });
+    await ensureTriagedLabel(gmail, cache);
+    expect(created).toBe(false);
+    expect(cache.get(TRIAGED_LABEL)).toBe("L_EXIST");
+  });
+
+  test("ensureTriagedLabel creates a hidden label when missing", async () => {
+    let body: Record<string, string> = {};
+    const cache = new Map<string, string>();
+    const gmail = mockGmail({
+      labelsCreate: (params: { requestBody: Record<string, string> }) => {
+        body = params.requestBody;
+        return Promise.resolve({ data: { id: "L_NEW" } });
+      },
+    });
+    await ensureTriagedLabel(gmail, cache);
+    expect(body.name).toBe(TRIAGED_LABEL);
+    expect(body.labelListVisibility).toBe("labelHide");
+    expect(body.messageListVisibility).toBe("hide");
+    expect(cache.get(TRIAGED_LABEL)).toBe("L_NEW");
   });
 
   test("read removes UNREAD only (stays in inbox)", async () => {

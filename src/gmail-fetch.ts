@@ -4,6 +4,7 @@ import { detectSlaPrefilter } from "./lib/sla-prefilter.ts";
 import { bodyTextFromPayload, keepBodiesOnLatest } from "./lib/email-body.ts";
 import { mapLimit } from "./lib/map-limit.ts";
 import { parseIdentities } from "./lib/identities.ts";
+import { TRIAGED_LABEL } from "./lib/types.ts";
 import type { Email, SlaThread, SlaThreadMessage } from "./lib/types.ts";
 import type { gmail_v1 } from "@googleapis/gmail";
 
@@ -97,13 +98,16 @@ export function toEmail(msg: gmail_v1.Schema$Message): Email | null {
   };
 }
 
+/** Unread inbox mail not yet handled by gmail-clean (which tags it TRIAGED_LABEL). */
+export const UNREAD_QUERY = `is:unread in:inbox -label:${TRIAGED_LABEL}`;
+
 export async function fetchUnreadEmails(options: {
   dryRun?: boolean;
   credentialsPath?: string;
 }): Promise<Email[]> {
   if (options.dryRun) {
     console.log("[dry-run] Would fetch unread emails from Gmail API");
-    console.log("[dry-run] Query: is:unread in:inbox");
+    console.log(`[dry-run] Query: ${UNREAD_QUERY}`);
     console.log("[dry-run] Batch size:", BATCH_SIZE);
     return [];
   }
@@ -115,7 +119,7 @@ export async function fetchUnreadEmails(options: {
   do {
     const res = await gmail.users.messages.list({
       userId: "me",
-      q: "is:unread in:inbox",
+      q: UNREAD_QUERY,
       maxResults: 100,
       pageToken,
     });
